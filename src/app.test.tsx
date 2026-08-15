@@ -57,6 +57,49 @@ test("lists meetings with their status", async () => {
 	expect(screen.getByText("Ready")).toBeTruthy();
 });
 
+test("repair and delete states show human labels, never raw machine words", async () => {
+	stub_council({
+		"/api/meetings/list": () => ({
+			body: {
+				meetings: [
+					meeting("m1", "create_unknown"),
+					meeting("m2", "recording_start_unknown"),
+					meeting("m3", "deleting"),
+					meeting("m4", "delete_failed"),
+				],
+			},
+		}),
+	});
+	render(<App client={make_client()} />);
+
+	expect(await screen.findByText("Create incomplete")).toBeTruthy();
+	expect(screen.getByText("Recording unknown")).toBeTruthy();
+	expect(screen.getByText("Deleting")).toBeTruthy();
+	expect(screen.getByText("Delete failed")).toBeTruthy();
+	expect(screen.queryByText("create_unknown")).toBeNull();
+});
+
+test(
+	"a processing meeting refreshes by itself until it settles",
+	async () => {
+		let attempts = 0;
+		stub_council({
+			"/api/meetings/list": () => {
+				attempts += 1;
+				return attempts === 1
+					? { body: { meetings: [meeting("m1", "processing")] } }
+					: { body: { meetings: [meeting("m1", "ready")] } };
+			},
+		});
+		render(<App client={make_client()} />);
+		expect(await screen.findByText("Processing")).toBeTruthy();
+
+		// No reload and no click: the page polls transitional meetings on its own.
+		expect(await screen.findByText("Ready", {}, { timeout: 10000 })).toBeTruthy();
+	},
+	15000,
+);
+
 test("a failed list shows an alert whose Retry reloads", async () => {
 	let attempts = 0;
 	stub_council({
@@ -96,6 +139,32 @@ test("creating a meeting shows the one-time join code with the cannot-retrieve w
 	expect(screen.getByDisplayValue("https://council.example.com/room?m=m9")).toBeTruthy();
 	expect(screen.getByText(/shown only this once and cannot be retrieved again/)).toBeTruthy();
 	expect(calls.some((call) => call.path === "/api/meetings/create" && JSON.stringify(call.body) === '{"title":"Planning"}')).toBe(true);
+});
+
+test("create works without native form submission (sandbox has no allow-forms)", async () => {
+	// The host iframe sandbox blocks native form submission, so a submit-type button and implicit
+	// Enter submission never fire in production. The button must be type="button" with a click
+	// handler, and Enter must go through the page's own key handler.
+	const calls = stub_council({
+		"/api/meetings/list": () => ({ body: { meetings: [] } }),
+		"/api/meetings/create": () => ({
+			body: {
+				meeting: meeting("m9", "created", "Planning"),
+				joinCode: "code-shown-once",
+				guestUrl: "https://council.example.com/room?m=m9",
+			},
+		}),
+	});
+	render(<App client={make_client()} />);
+	await screen.findByText("No meetings yet. Create one above.");
+
+	expect(screen.getByRole("button", { name: "Create meeting" }).getAttribute("type")).toBe("button");
+
+	fireEvent.input(screen.getByLabelText("Meeting title"), { target: { value: "Planning" } });
+	fireEvent.keyDown(screen.getByLabelText("Meeting title"), { key: "Enter" });
+	await waitFor(() => {
+		expect(calls.some((call) => call.path === "/api/meetings/create")).toBe(true);
+	});
 });
 
 test("an empty title never reaches the service", async () => {

@@ -11,17 +11,23 @@ import {
 
 const STATUS_LABELS: Record<string, string> = {
 	created: "Created",
+	create_unknown: "Create incomplete",
 	open: "Open",
+	recording_start_unknown: "Recording unknown",
 	closed: "Closed",
 	processing: "Processing",
 	ready: "Ready",
 	failed: "Failed",
 	expired: "Expired",
+	deleting: "Deleting",
+	delete_failed: "Delete failed",
 };
 
 function status_label(status: string) {
 	return STATUS_LABELS[status] ?? status;
 }
+
+const TRANSITIONAL_STATUSES = ["closed", "processing", "deleting"];
 
 function format_time(epochMs: number | null) {
 	return epochMs === null ? null : new Date(epochMs).toLocaleString();
@@ -103,6 +109,9 @@ export function CreateMeetingForm(props: { api: CouncilApi; onCreated: (created:
 		);
 	};
 
+	// The host iframe sandbox has no `allow-forms`, so native form submission is silently blocked:
+	// a submit-type button and implicit Enter submission never fire. The button and the Enter key
+	// call the handler directly; the form's onSubmit stays as a harmless safety net.
 	return (
 		<form className="create-form" onSubmit={handle_submit} noValidate>
 			<div className="field">
@@ -113,6 +122,11 @@ export function CreateMeetingForm(props: { api: CouncilApi; onCreated: (created:
 					value={title}
 					maxLength={180}
 					onInput={(event) => setTitle(event.currentTarget.value)}
+					onKeyDown={(event) => {
+						if (event.key === "Enter") {
+							handle_submit(event);
+						}
+					}}
 				/>
 			</div>
 			{error !== null ? (
@@ -120,7 +134,7 @@ export function CreateMeetingForm(props: { api: CouncilApi; onCreated: (created:
 					{error}
 				</p>
 			) : null}
-			<button type="submit" className="button button-primary" disabled={busy}>
+			<button type="button" className="button button-primary" disabled={busy} onClick={handle_submit}>
 				{busy ? "Creating…" : "Create meeting"}
 			</button>
 		</form>
@@ -355,6 +369,17 @@ export function App(props: { client: BonoboUiFrontendClient }) {
 	useEffect(() => {
 		refresh();
 	}, [refresh]);
+
+	// Meetings in these states change on their own (close handoff, the processing pipeline, the
+	// delete workflow). Refresh until they settle, so "Processing" becomes "Ready" without a
+	// manual reload. A tombstoned meeting drops out of the list, which also stops the polling.
+	useEffect(() => {
+		if (meetings === null || !meetings.some((item) => TRANSITIONAL_STATUSES.includes(item.status))) {
+			return;
+		}
+		const timer = setInterval(refresh, 5000);
+		return () => clearInterval(timer);
+	}, [meetings, refresh]);
 
 	return (
 		<div className="council">

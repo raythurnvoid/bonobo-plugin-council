@@ -2314,16 +2314,21 @@ function createVNode(type, props, key, isStaticChildren, __source, __self) {
 //#region src/app.tsx
 var STATUS_LABELS = {
 	created: "Created",
+	create_unknown: "Create incomplete",
 	open: "Open",
+	recording_start_unknown: "Recording unknown",
 	closed: "Closed",
 	processing: "Processing",
 	ready: "Ready",
 	failed: "Failed",
 	expired: "Expired",
+	deleting: "Deleting",
+	delete_failed: "Delete failed",
 };
 function status_label(status) {
 	return STATUS_LABELS[status] ?? status;
 }
+var TRANSITIONAL_STATUSES = ["closed", "processing", "deleting"];
 function format_time(epochMs) {
 	return epochMs === null ? null : new Date(epochMs).toLocaleString();
 }
@@ -2430,6 +2435,9 @@ function CreateMeetingForm(props) {
 						value: title,
 						maxLength: 180,
 						onInput: (event) => setTitle(event.currentTarget.value),
+						onKeyDown: (event) => {
+							if (event.key === "Enter") handle_submit(event);
+						},
 					}),
 				],
 			}),
@@ -2441,9 +2449,10 @@ function CreateMeetingForm(props) {
 					})
 				: null,
 			/* @__PURE__ */ createVNode("button", {
-				type: "submit",
+				type: "button",
 				className: "button button-primary",
 				disabled: busy,
+				onClick: handle_submit,
 				children: busy ? "Creating…" : "Create meeting",
 			}),
 		],
@@ -2735,6 +2744,11 @@ function App(props) {
 	useEffect(() => {
 		refresh();
 	}, [refresh]);
+	useEffect(() => {
+		if (meetings === null || !meetings.some((item) => TRANSITIONAL_STATUSES.includes(item.status))) return;
+		const timer = setInterval(refresh, 5e3);
+		return () => clearInterval(timer);
+	}, [meetings, refresh]);
 	return /* @__PURE__ */ createVNode("div", {
 		className: "council",
 		children: [
