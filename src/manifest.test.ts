@@ -1,0 +1,99 @@
+// @vitest-environment node
+// The default happy-dom environment rewrites import.meta.url to an http URL, which breaks the
+// file reads below; this test only touches the filesystem, so it runs under node.
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { describe, expect, test } from "vitest";
+import { COUNCIL_SERVICE_ORIGIN } from "./council-api";
+
+/**
+ * Guard the manifest against the host's `plugins_validate_manifest` rules this plugin depends on
+ * (packages/app/shared/plugins.ts). The checks mirror the documented limits rather than importing
+ * the validator, because the plugin repository builds standalone.
+ */
+
+const manifest = JSON.parse(readFileSync(new URL("../bonobo.plugin.json", import.meta.url), "utf8")) as {
+	schemaVersion: number;
+	name: string;
+	displayName: string;
+	version: string;
+	description: string;
+	compatibility: { bonoboPluginRuntime: string };
+	configuration: { description: string; defaultYaml: string } | null;
+	events: unknown[];
+	pages: { id: string; title: string; entry: string; navItem?: { label: string; icon?: string } }[];
+	capabilities: string[];
+	outboundOrigins: string[];
+	uiOutboundOrigins: string[];
+	files: { path: string; sha256: string; bytes: number; contentType: string }[];
+};
+
+describe("bonobo.plugin.json", () => {
+	test("names the plugin exactly as the deployed COUNCIL_PLUGIN_NAME expects", () => {
+		// The Convex service-grant exchange is bound to this exact name.
+		expect(manifest.name).toBe("council");
+		expect(manifest.schemaVersion).toBe(1);
+		expect(manifest.compatibility.bonoboPluginRuntime).toBe("1");
+		expect(manifest.version).toMatch(/^[0-9]+\.[0-9]+\.[0-9]+$/);
+		expect(manifest.displayName.length).toBeLessThanOrEqual(80);
+		expect(manifest.description.length).toBeLessThanOrEqual(2000);
+	});
+
+	test("declares one nav page whose entry is a listed text/html file", () => {
+		expect(manifest.pages).toHaveLength(1);
+		const page = manifest.pages[0]!;
+		expect(page.id).toMatch(/^[a-z0-9][a-z0-9-]{0,63}$/);
+		expect(page.navItem?.label.length).toBeLessThanOrEqual(40);
+		const entry = manifest.files.find((file) => file.path === page.entry);
+		expect(entry?.contentType).toBe("text/html");
+	});
+
+	test("declares the exact capability set the Council exchange requires", () => {
+		// plugin.service.connect requires plugin.data.read or workspace.files.write, and
+		// ui.outbound.fetch requires page outbound origins — both directions are publish rejections.
+		expect([...manifest.capabilities].sort()).toEqual([
+			"plugin.data.read",
+			"plugin.data.write",
+			"plugin.service.connect",
+			"ui.outbound.fetch",
+			"workspace.files.write",
+		]);
+	});
+
+	test("allows the page to reach exactly the Council service origin", () => {
+		expect(manifest.uiOutboundOrigins).toEqual([COUNCIL_SERVICE_ORIGIN]);
+		// No backend worker ships, so backend egress consents to nothing.
+		expect(manifest.outboundOrigins).toEqual([]);
+	});
+
+	test("declares the destination-folder configuration with a valid default", () => {
+		expect(manifest.configuration).not.toBeNull();
+		expect(manifest.configuration!.description.length).toBeLessThanOrEqual(500);
+		expect(manifest.configuration!.defaultYaml).toContain("/Meetings");
+	});
+
+	test("lists only dist/ files inside the documented size caps", () => {
+		expect(manifest.files.length).toBeLessThanOrEqual(64);
+		let total = 0;
+		for (const file of manifest.files) {
+			expect(file.path.startsWith("dist/")).toBe(true);
+			expect(file.sha256).toMatch(/^sha256:[a-f0-9]{64}$/);
+			expect(file.bytes).toBeLessThanOrEqual(900_000);
+			total += file.bytes;
+		}
+		expect(total).toBeLessThanOrEqual(16 * 1024 * 1024);
+	});
+
+	test("matches the built dist bytes exactly, including the dist manifest copy", () => {
+		// Publishing verifies these hashes against the fetched files; a stale dist would publish
+		// old code under a new version.
+		for (const file of manifest.files) {
+			const bytes = readFileSync(new URL(`../${file.path}`, import.meta.url));
+			expect(file.bytes).toBe(bytes.byteLength);
+			expect(file.sha256).toBe(`sha256:${createHash("sha256").update(bytes).digest("hex")}`);
+		}
+		const distManifest = readFileSync(new URL("../dist/bonobo.plugin.json", import.meta.url), "utf8");
+		const rootManifest = readFileSync(new URL("../bonobo.plugin.json", import.meta.url), "utf8");
+		expect(distManifest).toBe(rootManifest);
+	});
+});

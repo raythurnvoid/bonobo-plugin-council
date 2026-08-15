@@ -1,0 +1,32 @@
+{
+	"name": "@bonobo/plugin-council",
+	"private": true,
+	"version": "0.1.0",
+	"type": "module",
+	"scripts": {
+		"build": "vite build && prettier --write dist/frontend/assets/index.js dist/frontend/assets/index.css && node scripts/build-manifest.mjs",
+		"build:manifest": "node scripts/build-manifest.mjs",
+		"dev": "vite",
+		"test": "vitest",
+		"test:once": "vitest run --testTimeout 30000 --hookTimeout 30000 --teardownTimeout 30000",
+		"typecheck": "tsc --noEmit"
+	},
+	"packageManager": "pnpm@10.33.0",
+	"dependencies": {
+		"bonobo-plugin-sdk": "github:raythurnvoid/bonobo-plugin-sdk#a06c3c4f17c46408773b6a67adbf98e4dfc80c8a",
+		"preact": "^10.24.3",
+		"react": "^19.2.7",
+		"react-dom": "^19.2.7"
+	},
+	"devDependencies": {
+		"@testing-library/preact": "^3.2.4",
+		"@types/react": "^19.2.17",
+		"@types/react-dom": "^19.2.3",
+		"@vitejs/plugin-react": "6.0.4",
+		"happy-dom": "20.0.11",
+		"prettier": "3.8.3",
+		"typescript": "^7.0.2",
+		"vite": "8.1.5",
+		"vitest": "4.1.10"
+	}
+}

@@ -1,0 +1,55 @@
+{
+	"schemaVersion": 1,
+	"name": "council",
+	"displayName": "Council",
+	"version": "0.1.0",
+	"description": "Create recorded meetings with guest links. Recordings and named transcripts land in workspace files.",
+	"compatibility": {
+		"bonoboPluginRuntime": "1"
+	},
+	"configuration": {
+		"description": "Folder where Council writes each meeting's recording and transcript files.",
+		"defaultYaml": "destination:\n  folder: /Meetings\n"
+	},
+	"events": [],
+	"pages": [
+		{
+			"id": "council",
+			"title": "Council",
+			"entry": "dist/frontend/index.html",
+			"navItem": {
+				"label": "Council",
+				"icon": "film"
+			}
+		}
+	],
+	"capabilities": [
+		"plugin.data.read",
+		"plugin.data.write",
+		"plugin.service.connect",
+		"workspace.files.write",
+		"ui.outbound.fetch"
+	],
+	"outboundOrigins": [],
+	"uiOutboundOrigins": ["https://bonobo-council-service.ray-thurne-void.workers.dev"],
+	"files": [
+		{
+			"path": "dist/frontend/index.html",
+			"sha256": "sha256:10aa1c08ae9b4696fc486791f6f9624d5c90891d5ab75dda28ba9b849a1f6a68",
+			"bytes": 360,
+			"contentType": "text/html"
+		},
+		{
+			"path": "dist/frontend/assets/index.js",
+			"sha256": "sha256:287b445e68235ba0238194a0af9df56c8dbc89171d901e9a3995c0bfa2db2406",
+			"bytes": 96836,
+			"contentType": "application/javascript"
+		},
+		{
+			"path": "dist/frontend/assets/index.css",
+			"sha256": "sha256:ba0a27eb1fd365b3c3bda8e8cd23a9c018b5b06f5317e0de87ce96cf3a70b8ef",
+			"bytes": 5135,
+			"contentType": "text/css"
+		}
+	]
+}
