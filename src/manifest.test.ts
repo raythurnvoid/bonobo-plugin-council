@@ -19,7 +19,7 @@ const manifest = JSON.parse(readFileSync(new URL("../bonobo.plugin.json", import
 	version: string;
 	description: string;
 	compatibility: { bonoboPluginRuntime: string };
-	configuration: { description: string; defaultYaml: string } | null;
+	configuration?: { description: string; defaultYaml: string } | null;
 	events: unknown[];
 	pages: { id: string; title: string; entry: string; navItem?: { label: string; icon?: string } }[];
 	capabilities: string[];
@@ -66,10 +66,10 @@ describe("bonobo.plugin.json", () => {
 		expect(manifest.outboundOrigins).toEqual([]);
 	});
 
-	test("declares the destination-folder configuration with a valid default", () => {
-		expect(manifest.configuration).not.toBeNull();
-		expect(manifest.configuration!.description.length).toBeLessThanOrEqual(500);
-		expect(manifest.configuration!.defaultYaml).toContain("/Meetings");
+	test("does not declare a destination-folder configuration", () => {
+		// The Worker pins the destination at open from the service grant. A YAML folder would
+		// look like a member-owned setting and would not reach the Worker.
+		expect(manifest.configuration ?? null).toBeNull();
 	});
 
 	test("lists only dist/ files inside the documented size caps", () => {

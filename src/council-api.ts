@@ -21,6 +21,7 @@ export type CouncilMeeting = {
 	createdAt: number | null;
 	deadlineAt: number | null;
 	maxParticipants: number | null;
+	failureReason: string | null;
 };
 
 export type CouncilArtifact = {
@@ -59,6 +60,7 @@ function parse_meeting(value: unknown): CouncilMeeting | null {
 		createdAt: as_optional_number(record.createdAt),
 		deadlineAt: as_optional_number(record.deadlineAt),
 		maxParticipants: as_optional_number(record.maxParticipants),
+		failureReason: typeof record.failureReason === "string" ? record.failureReason : null,
 	};
 }
 

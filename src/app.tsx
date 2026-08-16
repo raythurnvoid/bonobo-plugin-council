@@ -66,6 +66,20 @@ function format_time(epochMs: number | null) {
 }
 
 /**
+ * Hide the provider transcript dump from the member-facing file list.
+ *
+ * The pipeline still uploads `provider-transcript.json` for diagnostics. Showing it next to
+ * `transcript.md` looks like a second transcript the member should open.
+ */
+function is_product_artifact(name: string) {
+	return !/(^|\/)provider-transcript\.json$/i.test(name);
+}
+
+function product_artifacts(artifacts: CouncilMeetingDetails["artifacts"]) {
+	return artifacts.filter((artifact) => is_product_artifact(artifact.name));
+}
+
+/**
  * A value the member has to carry somewhere else (join code, guest link, room link). The plugin
  * iframe's sandbox has no `allow-popups`, so the page cannot open a new tab itself — copying the
  * value is the supported flow.
@@ -300,17 +314,24 @@ export function MeetingRow(props: MeetingRow_Props) {
 	const handle_toggle_details = () => {
 		if (detailsOpen) {
 			setDetailsOpen(false);
+			setDetails(null);
 			return;
 		}
 		setDetailsOpen(true);
-		if (details === null) {
-			run("details", async () => {
-				setDetails(await api.get_meeting(meeting.id));
-			});
-		}
 	};
 
+	useEffect(() => {
+		if (!detailsOpen) {
+			return;
+		}
+		// Fetch on every open, and again if the row's status changes while details stay open.
+		run("details", async () => {
+			setDetails(await api.get_meeting(meeting.id));
+		});
+	}, [detailsOpen, meeting.id, meeting.status]);
+
 	const deadline = format_time(meeting.deadlineAt);
+	const visibleArtifacts = details !== null ? product_artifacts(details.artifacts) : [];
 
 	return (
 		<li className="meeting">
@@ -319,6 +340,11 @@ export function MeetingRow(props: MeetingRow_Props) {
 				<span className={`meeting-status meeting-status-${meeting.status}`}>{status_label(meeting.status)}</span>
 			</div>
 			{deadline !== null && meeting.status === "open" ? <p className="meeting-meta">Closes at {deadline}</p> : null}
+			{meeting.status === "failed" && meeting.failureReason ? (
+				<p className="meeting-meta" role="status">
+					{meeting.failureReason}
+				</p>
+			) : null}
 			<div className="meeting-actions">
 				{meeting.status === "created" ? (
 					<button type="button" className="button" disabled={busy !== null} onClick={handle_open}>
@@ -392,11 +418,16 @@ export function MeetingRow(props: MeetingRow_Props) {
 			) : null}
 			{detailsOpen && details !== null ? (
 				<div className="meeting-details">
-					{details.artifacts.length > 0 ? (
+					{details.meeting.failureReason ? (
+						<p className="panel-hint" role="status">
+							{details.meeting.failureReason}
+						</p>
+					) : null}
+					{visibleArtifacts.length > 0 ? (
 						<>
 							<h4>Files</h4>
 							<ul className="meeting-artifacts">
-								{details.artifacts.map((artifact) => (
+								{visibleArtifacts.map((artifact) => (
 									<li key={artifact.fileNodeId ?? artifact.name}>
 										{artifact.name}
 										{artifact.fileNodeId !== null ? (
@@ -410,7 +441,9 @@ export function MeetingRow(props: MeetingRow_Props) {
 						<p className="panel-hint">
 							{details.meeting.status === "ready"
 								? "No files were reported for this meeting."
-								: "Recording and transcript files appear here once the meeting is processed."}
+								: details.meeting.status === "failed"
+									? "Processing did not produce files."
+									: "Recording and transcript files appear here once the meeting is processed."}
 						</p>
 					)}
 				</div>

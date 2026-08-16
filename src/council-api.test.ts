@@ -94,6 +94,7 @@ describe("create_council_api", () => {
 			createdAt: null,
 			deadlineAt: null,
 			maxParticipants: null,
+			failureReason: null,
 		});
 	});
 
@@ -130,9 +131,31 @@ describe("create_council_api", () => {
 		const api = create_council_api(make_client(["plu_first"]));
 
 		const details = await api.get_meeting("m1");
+		expect(details.meeting.failureReason).toBeNull();
 		expect(details.artifacts).toEqual([
 			{ name: "standup.mp4", fileNodeId: "node1" },
 			{ name: "/Meetings/standup.md", fileNodeId: null },
 		]);
+	});
+
+	test("get keeps a string failureReason on a failed meeting", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () =>
+				json_response(200, {
+					meeting: {
+						id: "m1",
+						title: "Standup",
+						status: "failed",
+						failureReason: "Provider session ended without a recording",
+					},
+					artifacts: [],
+				}),
+			),
+		);
+		const api = create_council_api(make_client(["plu_first"]));
+
+		const details = await api.get_meeting("m1");
+		expect(details.meeting.failureReason).toBe("Provider session ended without a recording");
 	});
 });

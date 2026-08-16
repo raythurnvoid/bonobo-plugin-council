@@ -2157,6 +2157,7 @@ function parse_meeting(value) {
 		createdAt: as_optional_number(record.createdAt),
 		deadlineAt: as_optional_number(record.deadlineAt),
 		maxParticipants: as_optional_number(record.maxParticipants),
+		failureReason: typeof record.failureReason === "string" ? record.failureReason : null,
 	};
 }
 function parse_artifact(value) {
@@ -2353,6 +2354,18 @@ function describe_meeting_changes(previous, next) {
 }
 function format_time(epochMs) {
 	return epochMs === null ? null : new Date(epochMs).toLocaleString();
+}
+/**
+ * Hide the provider transcript dump from the member-facing file list.
+ *
+ * The pipeline still uploads `provider-transcript.json` for diagnostics. Showing it next to
+ * `transcript.md` looks like a second transcript the member should open.
+ */
+function is_product_artifact(name) {
+	return !/(^|\/)provider-transcript\.json$/i.test(name);
+}
+function product_artifacts(artifacts) {
+	return artifacts.filter((artifact) => is_product_artifact(artifact.name));
 }
 /**
  * A value the member has to carry somewhere else (join code, guest link, room link). The plugin
@@ -2591,15 +2604,19 @@ function MeetingRow(props) {
 	const handle_toggle_details = () => {
 		if (detailsOpen) {
 			setDetailsOpen(false);
+			setDetails(null);
 			return;
 		}
 		setDetailsOpen(true);
-		if (details === null)
-			run("details", async () => {
-				setDetails(await api.get_meeting(meeting.id));
-			});
 	};
+	useEffect(() => {
+		if (!detailsOpen) return;
+		run("details", async () => {
+			setDetails(await api.get_meeting(meeting.id));
+		});
+	}, [detailsOpen, meeting.id, meeting.status]);
 	const deadline = format_time(meeting.deadlineAt);
+	const visibleArtifacts = details !== null ? product_artifacts(details.artifacts) : [];
 	return /* @__PURE__ */ createVNode("li", {
 		className: "meeting",
 		children: [
@@ -2620,6 +2637,13 @@ function MeetingRow(props) {
 				? /* @__PURE__ */ createVNode("p", {
 						className: "meeting-meta",
 						children: ["Closes at ", deadline],
+					})
+				: null,
+			meeting.status === "failed" && meeting.failureReason
+				? /* @__PURE__ */ createVNode("p", {
+						className: "meeting-meta",
+						role: "status",
+						children: meeting.failureReason,
 					})
 				: null,
 			/* @__PURE__ */ createVNode("div", {
@@ -2722,14 +2746,21 @@ function MeetingRow(props) {
 			detailsOpen && details !== null
 				? /* @__PURE__ */ createVNode("div", {
 						className: "meeting-details",
-						children:
-							details.artifacts.length > 0
+						children: [
+							details.meeting.failureReason
+								? /* @__PURE__ */ createVNode("p", {
+										className: "panel-hint",
+										role: "status",
+										children: details.meeting.failureReason,
+									})
+								: null,
+							visibleArtifacts.length > 0
 								? /* @__PURE__ */ createVNode(Fragment, {
 										children: [
 											/* @__PURE__ */ createVNode("h4", { children: "Files" }),
 											/* @__PURE__ */ createVNode("ul", {
 												className: "meeting-artifacts",
-												children: details.artifacts.map((artifact) =>
+												children: visibleArtifacts.map((artifact) =>
 													/* @__PURE__ */ createVNode(
 														"li",
 														{
@@ -2754,8 +2785,11 @@ function MeetingRow(props) {
 										children:
 											details.meeting.status === "ready"
 												? "No files were reported for this meeting."
-												: "Recording and transcript files appear here once the meeting is processed.",
+												: details.meeting.status === "failed"
+													? "Processing did not produce files."
+													: "Recording and transcript files appear here once the meeting is processed.",
 									}),
+						],
 					})
 				: null,
 			error !== null

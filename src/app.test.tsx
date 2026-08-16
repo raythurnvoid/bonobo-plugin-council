@@ -425,3 +425,68 @@ test("details of a ready meeting list the produced files", async () => {
 	expect(await screen.findByText("recording.mp4")).toBeTruthy();
 	expect(screen.getByText("transcript.md")).toBeTruthy();
 });
+
+test("details refetch after hide so later artifacts appear", async () => {
+	let getCount = 0;
+	stub_council({
+		"/api/meetings/list": () => ({ body: { meetings: [meeting("m1", "processing")] } }),
+		"/api/meetings/get": () => {
+			getCount += 1;
+			return {
+				body: {
+					meeting: meeting("m1", getCount === 1 ? "processing" : "ready"),
+					artifacts: getCount === 1 ? [] : [{ name: "recording.mp4" }],
+				},
+			};
+		},
+	});
+	render(<App client={make_client()} />);
+	await screen.findByText("Meeting m1");
+
+	fireEvent.click(screen.getByRole("button", { name: "Details" }));
+	expect(await screen.findByText("Recording and transcript files appear here once the meeting is processed.")).toBeTruthy();
+
+	fireEvent.click(screen.getByRole("button", { name: "Hide details" }));
+	fireEvent.click(screen.getByRole("button", { name: "Details" }));
+
+	expect(await screen.findByText("recording.mp4")).toBeTruthy();
+});
+
+test("details hide the provider transcript dump", async () => {
+	stub_council({
+		"/api/meetings/list": () => ({ body: { meetings: [meeting("m1", "ready")] } }),
+		"/api/meetings/get": () => ({
+			body: {
+				meeting: meeting("m1", "ready"),
+				artifacts: [{ name: "transcript.md" }, { name: "provider-transcript.json" }],
+			},
+		}),
+	});
+	render(<App client={make_client()} />);
+	await screen.findByText("Meeting m1");
+
+	fireEvent.click(screen.getByRole("button", { name: "Details" }));
+
+	expect(await screen.findByText("transcript.md")).toBeTruthy();
+	expect(screen.queryByText("provider-transcript.json")).toBeNull();
+});
+
+test("a failed meeting shows the failure reason on the row", async () => {
+	stub_council({
+		"/api/meetings/list": () => ({
+			body: {
+				meetings: [
+					{
+						id: "m1",
+						title: "Meeting m1",
+						status: "failed",
+						failureReason: "Provider session ended without a recording",
+					},
+				],
+			},
+		}),
+	});
+	render(<App client={make_client()} />);
+
+	expect(await screen.findByText("Provider session ended without a recording")).toBeTruthy();
+});
