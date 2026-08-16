@@ -102,6 +102,33 @@ test(
 	15000,
 );
 
+test(
+	"a status change is announced to screen readers",
+	async () => {
+		let attempts = 0;
+		stub_council({
+			"/api/meetings/list": () => {
+				attempts += 1;
+				return attempts === 1
+					? { body: { meetings: [meeting("m1", "processing", "Weekly sync")] } }
+					: { body: { meetings: [meeting("m1", "ready", "Weekly sync")] } };
+			},
+		});
+		render(<App client={make_client()} />);
+		await screen.findByText("Processing");
+
+		// The new label alone is silent: a screen reader reads a status change only from a live
+		// region, so the assertion is on the region, not on the row text.
+		await waitFor(
+			() => {
+				expect(screen.getByRole("status").textContent).toBe("Meeting Weekly sync is now Ready");
+			},
+			{ timeout: 10000 },
+		);
+	},
+	15000,
+);
+
 test("a failed list shows an alert whose Retry reloads", async () => {
 	let attempts = 0;
 	stub_council({
@@ -223,12 +250,65 @@ test("delete fires only after the inline confirmation", async () => {
 
 	fireEvent.click(screen.getByRole("button", { name: "Delete" }));
 	expect(calls.some((call) => call.path === "/api/meetings/delete")).toBe(false);
-	expect(screen.getByText(/This cannot be undone/)).toBeTruthy();
+	expect(screen.getByText(/move to the archive/)).toBeTruthy();
 
 	fireEvent.click(screen.getByRole("button", { name: "Confirm delete" }));
 	await waitFor(() => {
 		expect(calls.some((call) => call.path === "/api/meetings/delete" && JSON.stringify(call.body) === '{"meetingId":"m1"}')).toBe(true);
 	});
+});
+
+test("a deleted meeting is announced after its row disappears", async () => {
+	let deleted = false;
+	stub_council({
+		"/api/meetings/list": () => ({
+			body: { meetings: deleted ? [] : [meeting("m1", "closed", "Weekly sync")] },
+		}),
+		"/api/meetings/delete": () => {
+			deleted = true;
+			return { body: {} };
+		},
+	});
+	render(<App client={make_client()} />);
+	await screen.findByText("Weekly sync");
+
+	fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+	fireEvent.click(screen.getByRole("button", { name: "Confirm delete" }));
+
+	// A row taken out of the page announces nothing on its way out, so the page says it instead.
+	await waitFor(() => {
+		expect(screen.getByRole("status").textContent).toBe("Meeting Weekly sync was deleted");
+	});
+});
+
+test("opening the delete confirmation moves focus to Confirm delete", async () => {
+	stub_council({
+		"/api/meetings/list": () => ({ body: { meetings: [meeting("m1", "closed")] } }),
+	});
+	render(<App client={make_client()} />);
+	await screen.findByText("Meeting m1");
+
+	fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+
+	await waitFor(() => {
+		expect(document.activeElement).toBe(screen.getByRole("button", { name: "Confirm delete" }));
+	});
+});
+
+test("cancelling the delete confirmation returns focus to Delete", async () => {
+	stub_council({
+		"/api/meetings/list": () => ({ body: { meetings: [meeting("m1", "closed")] } }),
+	});
+	render(<App client={make_client()} />);
+	await screen.findByText("Meeting m1");
+
+	const deleteButton = screen.getByRole("button", { name: "Delete" });
+	fireEvent.click(deleteButton);
+	await screen.findByRole("button", { name: "Confirm delete" });
+
+	fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+	expect(document.activeElement).toBe(deleteButton);
 });
 
 test("an open meeting offers the single-use host room link as a copyable value", async () => {

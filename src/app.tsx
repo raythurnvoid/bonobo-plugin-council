@@ -29,6 +29,34 @@ function status_label(status: string) {
 
 const TRANSITIONAL_STATUSES = ["closed", "processing", "deleting"];
 
+/**
+ * Describe what changed between two list refreshes, for the screen-reader announcer.
+ *
+ * The list refreshes itself every few seconds, so a member using a screen reader is never told
+ * that a meeting finished processing or that a delete completed. A row cannot announce its own
+ * removal, because a node taken out of a live region says nothing. So both lists are compared
+ * here, where the old one and the new one are visible at the same time.
+ */
+function describe_meeting_changes(previous: CouncilMeeting[], next: CouncilMeeting[]) {
+	const nextById = new Map(next.map((meeting) => [meeting.id, meeting]));
+	const changes: string[] = [];
+
+	for (const before of previous) {
+		const after = nextById.get(before.id);
+		// A meeting leaves the list only when its delete finished and the row was tombstoned.
+		if (!after) {
+			changes.push(`Meeting ${before.title} was deleted`);
+			continue;
+		}
+
+		if (after.status !== before.status) {
+			changes.push(`Meeting ${after.title} is now ${status_label(after.status)}`);
+		}
+	}
+
+	return changes.join(". ");
+}
+
 function format_time(epochMs: number | null) {
 	return epochMs === null ? null : new Date(epochMs).toLocaleString();
 }
@@ -193,6 +221,23 @@ export function MeetingRow(props: MeetingRow_Props) {
 	const [roomUrl, setRoomUrl] = useState<string | null>(null);
 	const [details, setDetails] = useState<CouncilMeetingDetails | null>(null);
 	const [detailsOpen, setDetailsOpen] = useState(false);
+	const confirmDeleteId = useId();
+	const deleteButtonRef = useRef<HTMLButtonElement | null>(null);
+	const confirmDeleteButtonRef = useRef<HTMLButtonElement | null>(null);
+
+	// Move focus into the confirmation when it opens. Without this the panel appears somewhere the
+	// keyboard is not, and a screen reader never reaches the warning before the member acts.
+	useEffect(() => {
+		if (confirmingDelete) {
+			confirmDeleteButtonRef.current?.focus();
+		}
+	}, [confirmingDelete]);
+
+	const handle_cancel_delete = () => {
+		setConfirmingDelete(false);
+		// Send focus back where it came from, so cancelling does not drop the member at the page top.
+		deleteButtonRef.current?.focus();
+	};
 
 	const run = (action: string, work: () => Promise<void>) => {
 		setBusy(action);
@@ -283,6 +328,7 @@ export function MeetingRow(props: MeetingRow_Props) {
 					{busy === "details" ? "Loading…" : detailsOpen ? "Hide details" : "Details"}
 				</button>
 				<button
+					ref={deleteButtonRef}
 					type="button"
 					className="button button-danger"
 					disabled={busy !== null}
@@ -291,14 +337,27 @@ export function MeetingRow(props: MeetingRow_Props) {
 					{busy === "delete" ? "Deleting…" : "Delete"}
 				</button>
 			</div>
+			{/* Not an `alertdialog`: that role promises a modal, and the rest of the row stays usable
+			    here. Focus movement plus the description below is what a member actually needs. */}
 			{confirmingDelete ? (
 				<div className="meeting-confirm">
-					<p>Delete this meeting and its stored files? This cannot be undone.</p>
+					<p id={confirmDeleteId}>
+						Delete this meeting? The meeting itself is gone for good. Its stored files move to the archive, so a
+						member can restore them from Files.
+					</p>
 					<div className="meeting-confirm-buttons">
-						<button type="button" className="button button-danger" onClick={handle_delete}>
+						{/* The description sits on the button, not on the panel around it. A description on a
+						    plain container is not read out; on the button that just took focus it is. */}
+						<button
+							ref={confirmDeleteButtonRef}
+							type="button"
+							className="button button-danger"
+							aria-describedby={confirmDeleteId}
+							onClick={handle_delete}
+						>
 							Confirm delete
 						</button>
-						<button type="button" className="button" onClick={() => setConfirmingDelete(false)}>
+						<button type="button" className="button" onClick={handle_cancel_delete}>
 							Cancel
 						</button>
 					</div>
@@ -350,8 +409,12 @@ export function App(props: { client: BonoboUiFrontendClient }) {
 	const [meetings, setMeetings] = useState<CouncilMeeting[] | null>(null);
 	const [listError, setListError] = useState<string | null>(null);
 	const [created, setCreated] = useState<CouncilCreatedMeeting | null>(null);
+	const [announcement, setAnnouncement] = useState("");
 	// Single-flight guard for the async list refresh; a ref keeps it exact across renders.
 	const refreshingRef = useRef(false);
+	// The list as the member last saw it. Only the comparison against the next list can tell that a
+	// meeting settled or disappeared, and a ref keeps it out of the render that reads it.
+	const announcedMeetingsRef = useRef<CouncilMeeting[] | null>(null);
 
 	const refresh = useCallback(() => {
 		if (refreshingRef.current) {
@@ -362,6 +425,12 @@ export function App(props: { client: BonoboUiFrontendClient }) {
 		api.list_meetings().then(
 			(items) => {
 				refreshingRef.current = false;
+				const announced = announcedMeetingsRef.current;
+				announcedMeetingsRef.current = items;
+				// Skip the first load: arriving meetings are not a change the member should hear.
+				if (announced !== null) {
+					setAnnouncement(describe_meeting_changes(announced, items));
+				}
 				setMeetings(items);
 			},
 			(error: unknown) => {
@@ -438,6 +507,12 @@ export function App(props: { client: BonoboUiFrontendClient }) {
 					</ul>
 				)}
 			</section>
+
+			{/* Keep this mounted at all times. A live region that appears together with its first
+			    message is announced unreliably, because the screen reader has nothing to watch yet. */}
+			<div className="council-announcer visually-hidden" role="status" aria-live="polite">
+				{announcement}
+			</div>
 		</div>
 	);
 }

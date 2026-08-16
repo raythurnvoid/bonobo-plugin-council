@@ -2329,6 +2329,27 @@ function status_label(status) {
 	return STATUS_LABELS[status] ?? status;
 }
 var TRANSITIONAL_STATUSES = ["closed", "processing", "deleting"];
+/**
+ * Describe what changed between two list refreshes, for the screen-reader announcer.
+ *
+ * The list refreshes itself every few seconds, so a member using a screen reader is never told
+ * that a meeting finished processing or that a delete completed. A row cannot announce its own
+ * removal, because a node taken out of a live region says nothing. So both lists are compared
+ * here, where the old one and the new one are visible at the same time.
+ */
+function describe_meeting_changes(previous, next) {
+	const nextById = new Map(next.map((meeting) => [meeting.id, meeting]));
+	const changes = [];
+	for (const before of previous) {
+		const after = nextById.get(before.id);
+		if (!after) {
+			changes.push(`Meeting ${before.title} was deleted`);
+			continue;
+		}
+		if (after.status !== before.status) changes.push(`Meeting ${after.title} is now ${status_label(after.status)}`);
+	}
+	return changes.join(". ");
+}
 function format_time(epochMs) {
 	return epochMs === null ? null : new Date(epochMs).toLocaleString();
 }
@@ -2512,6 +2533,16 @@ function MeetingRow(props) {
 	const [roomUrl, setRoomUrl] = useState(null);
 	const [details, setDetails] = useState(null);
 	const [detailsOpen, setDetailsOpen] = useState(false);
+	const confirmDeleteId = useId();
+	const deleteButtonRef = useRef(null);
+	const confirmDeleteButtonRef = useRef(null);
+	useEffect(() => {
+		if (confirmingDelete) confirmDeleteButtonRef.current?.focus();
+	}, [confirmingDelete]);
+	const handle_cancel_delete = () => {
+		setConfirmingDelete(false);
+		deleteButtonRef.current?.focus();
+	};
 	const run = (action, work) => {
 		setBusy(action);
 		setError(null);
@@ -2621,6 +2652,7 @@ function MeetingRow(props) {
 						children: busy === "details" ? "Loading…" : detailsOpen ? "Hide details" : "Details",
 					}),
 					/* @__PURE__ */ createVNode("button", {
+						ref: deleteButtonRef,
 						type: "button",
 						className: "button button-danger",
 						disabled: busy !== null,
@@ -2634,21 +2666,25 @@ function MeetingRow(props) {
 						className: "meeting-confirm",
 						children: [
 							/* @__PURE__ */ createVNode("p", {
-								children: "Delete this meeting and its stored files? This cannot be undone.",
+								id: confirmDeleteId,
+								children:
+									"Delete this meeting? The meeting itself is gone for good. Its stored files move to the archive, so a member can restore them from Files.",
 							}),
 							/* @__PURE__ */ createVNode("div", {
 								className: "meeting-confirm-buttons",
 								children: [
 									/* @__PURE__ */ createVNode("button", {
+										ref: confirmDeleteButtonRef,
 										type: "button",
 										className: "button button-danger",
+										"aria-describedby": confirmDeleteId,
 										onClick: handle_delete,
 										children: "Confirm delete",
 									}),
 									/* @__PURE__ */ createVNode("button", {
 										type: "button",
 										className: "button",
-										onClick: () => setConfirmingDelete(false),
+										onClick: handle_cancel_delete,
 										children: "Cancel",
 									}),
 								],
@@ -2726,7 +2762,9 @@ function App(props) {
 	const [meetings, setMeetings] = useState(null);
 	const [listError, setListError] = useState(null);
 	const [created, setCreated] = useState(null);
+	const [announcement, setAnnouncement] = useState("");
 	const refreshingRef = useRef(false);
+	const announcedMeetingsRef = useRef(null);
 	const refresh = useCallback(() => {
 		if (refreshingRef.current) return;
 		refreshingRef.current = true;
@@ -2734,6 +2772,9 @@ function App(props) {
 		api.list_meetings().then(
 			(items) => {
 				refreshingRef.current = false;
+				const announced = announcedMeetingsRef.current;
+				announcedMeetingsRef.current = items;
+				if (announced !== null) setAnnouncement(describe_meeting_changes(announced, items));
 				setMeetings(items);
 			},
 			(error) => {
@@ -2836,6 +2877,12 @@ function App(props) {
 										),
 									}),
 				],
+			}),
+			/* @__PURE__ */ createVNode("div", {
+				className: "council-announcer visually-hidden",
+				role: "status",
+				"aria-live": "polite",
+				children: announcement,
 			}),
 		],
 	});
