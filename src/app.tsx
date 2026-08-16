@@ -244,6 +244,7 @@ export function MeetingRow(props: MeetingRow_Props) {
 	const [roomUrl, setRoomUrl] = useState<string | null>(null);
 	const [details, setDetails] = useState<CouncilMeetingDetails | null>(null);
 	const [detailsOpen, setDetailsOpen] = useState(false);
+	const detailsRequestRef = useRef(0);
 	const confirmDeleteId = useId();
 	const deleteButtonRef = useRef<HTMLButtonElement | null>(null);
 	const confirmDeleteButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -325,8 +326,14 @@ export function MeetingRow(props: MeetingRow_Props) {
 			return;
 		}
 		// Fetch on every open, and again if the row's status changes while details stay open.
+		// Ignore a slower GET that returns after a newer one, or it can restore empty artifacts.
+		const requestId = ++detailsRequestRef.current;
 		run("details", async () => {
-			setDetails(await api.get_meeting(meeting.id));
+			const next = await api.get_meeting(meeting.id);
+			if (requestId !== detailsRequestRef.current) {
+				return;
+			}
+			setDetails(next);
 		});
 	}, [detailsOpen, meeting.id, meeting.status]);
 
@@ -340,10 +347,12 @@ export function MeetingRow(props: MeetingRow_Props) {
 				<span className={`meeting-status meeting-status-${meeting.status}`}>{status_label(meeting.status)}</span>
 			</div>
 			{deadline !== null && meeting.status === "open" ? <p className="meeting-meta">Closes at {deadline}</p> : null}
-			{meeting.status === "failed" && meeting.failureReason ? (
-				<p className="meeting-meta" role="status">
-					{meeting.failureReason}
-				</p>
+			{meeting.status === "failed" || meeting.status === "delete_failed" ? (
+				meeting.failureReason ? (
+					<p className="meeting-meta" role="status">
+						{meeting.failureReason}
+					</p>
+				) : null
 			) : null}
 			<div className="meeting-actions">
 				{meeting.status === "created" ? (
@@ -585,7 +594,8 @@ export function App(props: { client: BonoboUiFrontendClient }) {
 			{/* Keep this mounted at all times. A live region that appears together with its first
 			    message is announced unreliably, because the screen reader has nothing to watch yet. */}
 			<div className="council-announcer visually-hidden" role="status" aria-live="polite">
-				{announcement.text}
+				<span data-announcement-sequence={String(announcement.sequence)}>{announcement.sequence}</span>
+				{announcement.text !== "" ? ` ${announcement.text}` : ""}
 			</div>
 		</div>
 	);

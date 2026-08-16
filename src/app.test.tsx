@@ -115,7 +115,7 @@ test("a status change is announced to screen readers", async () => {
 	// region, so the assertion is on the region, not on the row text.
 	await waitFor(
 		() => {
-			expect(screen.getByRole("status").textContent).toBe("Meeting Weekly sync is now Ready");
+			expect(screen.getByRole("status").textContent).toContain("Meeting Weekly sync is now Ready");
 		},
 		{ timeout: 10000 },
 	);
@@ -137,7 +137,7 @@ test("a meeting created elsewhere appears and is announced after the list settle
 	expect(await screen.findByRole("heading", { level: 3, name: "Other tab meeting" }, { timeout: 10000 })).toBeTruthy();
 	await waitFor(
 		() => {
-			expect(screen.getByRole("status").textContent).toBe("Meeting Other tab meeting was added");
+			expect(screen.getByRole("status").textContent).toContain("Meeting Other tab meeting was added");
 		},
 		{ timeout: 10000 },
 	);
@@ -329,7 +329,7 @@ test("a deleted meeting is announced after its row disappears", async () => {
 
 	// A row taken out of the page announces nothing on its way out, so the page says it instead.
 	await waitFor(() => {
-		expect(screen.getByRole("status").textContent).toBe("Meeting Weekly sync was deleted");
+		expect(screen.getByRole("status").textContent).toContain("Meeting Weekly sync was deleted");
 	});
 });
 
@@ -489,4 +489,24 @@ test("a failed meeting shows the failure reason on the row", async () => {
 	render(<App client={make_client()} />);
 
 	expect(await screen.findByText("Provider session ended without a recording")).toBeTruthy();
+});
+
+test("a delete_failed meeting shows the failure reason on the row", async () => {
+	stub_council({
+		"/api/meetings/list": () => ({
+			body: {
+				meetings: [
+					{
+						id: "m1",
+						title: "Meeting m1",
+						status: "delete_failed",
+						failureReason: "This item is read-only.",
+					},
+				],
+			},
+		}),
+	});
+	render(<App client={make_client()} />);
+
+	expect(await screen.findByText("This item is read-only.")).toBeTruthy();
 });

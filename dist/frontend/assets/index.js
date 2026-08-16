@@ -2547,6 +2547,7 @@ function MeetingRow(props) {
 	const [roomUrl, setRoomUrl] = useState(null);
 	const [details, setDetails] = useState(null);
 	const [detailsOpen, setDetailsOpen] = useState(false);
+	const detailsRequestRef = useRef(0);
 	const confirmDeleteId = useId();
 	const deleteButtonRef = useRef(null);
 	const confirmDeleteButtonRef = useRef(null);
@@ -2611,8 +2612,11 @@ function MeetingRow(props) {
 	};
 	useEffect(() => {
 		if (!detailsOpen) return;
+		const requestId = ++detailsRequestRef.current;
 		run("details", async () => {
-			setDetails(await api.get_meeting(meeting.id));
+			const next = await api.get_meeting(meeting.id);
+			if (requestId !== detailsRequestRef.current) return;
+			setDetails(next);
 		});
 	}, [detailsOpen, meeting.id, meeting.status]);
 	const deadline = format_time(meeting.deadlineAt);
@@ -2639,12 +2643,14 @@ function MeetingRow(props) {
 						children: ["Closes at ", deadline],
 					})
 				: null,
-			meeting.status === "failed" && meeting.failureReason
-				? /* @__PURE__ */ createVNode("p", {
-						className: "meeting-meta",
-						role: "status",
-						children: meeting.failureReason,
-					})
+			meeting.status === "failed" || meeting.status === "delete_failed"
+				? meeting.failureReason
+					? /* @__PURE__ */ createVNode("p", {
+							className: "meeting-meta",
+							role: "status",
+							children: meeting.failureReason,
+						})
+					: null
 				: null,
 			/* @__PURE__ */ createVNode("div", {
 				className: "meeting-actions",
@@ -2954,7 +2960,13 @@ function App(props) {
 				className: "council-announcer visually-hidden",
 				role: "status",
 				"aria-live": "polite",
-				children: announcement.text,
+				children: [
+					/* @__PURE__ */ createVNode("span", {
+						"data-announcement-sequence": String(announcement.sequence),
+						children: announcement.sequence,
+					}),
+					announcement.text !== "" ? ` ${announcement.text}` : "",
+				],
 			}),
 		],
 	});
