@@ -89,6 +89,11 @@ export function CreateMeetingForm(props: { api: CouncilApi; onCreated: (created:
 
 	const handle_submit = (event: { preventDefault: () => void }) => {
 		event.preventDefault();
+		// The Enter key calls this directly, so the button's disabled state alone cannot stop a
+		// second submit while the first create is still in flight.
+		if (busy) {
+			return;
+		}
 		const trimmed = title.trim();
 		if (trimmed === "") {
 			setError("Enter a meeting title.");

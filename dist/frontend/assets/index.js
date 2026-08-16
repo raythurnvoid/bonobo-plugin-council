@@ -2398,6 +2398,7 @@ function CreateMeetingForm(props) {
 	const [error, setError] = useState(null);
 	const handle_submit = (event) => {
 		event.preventDefault();
+		if (busy) return;
 		const trimmed = title.trim();
 		if (trimmed === "") {
 			setError("Enter a meeting title.");

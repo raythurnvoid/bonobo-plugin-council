@@ -11,7 +11,9 @@ function make_client(): BonoboUiFrontendClient {
 	} as unknown as BonoboUiFrontendClient;
 }
 
-type RouteHandler = (body: unknown) => { status?: number; body: unknown };
+type RouteHandler = (
+	body: unknown,
+) => { status?: number; body: unknown } | Promise<{ status?: number; body: unknown }>;
 
 /**
  * Stub global fetch with per-path handlers, so each test declares only the Council routes it
@@ -29,7 +31,7 @@ function stub_council(routes: Record<string, RouteHandler>) {
 			if (!handler) {
 				return new Response(JSON.stringify({ message: `Unhandled test route ${path}` }), { status: 500 });
 			}
-			const result = handler(body);
+			const result = await handler(body);
 			return new Response(JSON.stringify(result.body), { status: result.status ?? 200 });
 		}),
 	);
@@ -165,6 +167,37 @@ test("create works without native form submission (sandbox has no allow-forms)",
 	await waitFor(() => {
 		expect(calls.some((call) => call.path === "/api/meetings/create")).toBe(true);
 	});
+});
+
+test("a second Enter while create is pending does not fire a second create", async () => {
+	let release!: () => void;
+	const gate = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const calls = stub_council({
+		"/api/meetings/list": () => ({ body: { meetings: [] } }),
+		"/api/meetings/create": async () => {
+			await gate;
+			return {
+				body: {
+					meeting: meeting("m9", "created", "Planning"),
+					joinCode: "code-shown-once",
+					guestUrl: "https://council.example.com/room?m=m9",
+				},
+			};
+		},
+	});
+	render(<App client={make_client()} />);
+	await screen.findByText("No meetings yet. Create one above.");
+
+	fireEvent.input(screen.getByLabelText("Meeting title"), { target: { value: "Planning" } });
+	fireEvent.keyDown(screen.getByLabelText("Meeting title"), { key: "Enter" });
+	await screen.findByRole("button", { name: "Creating…" });
+	fireEvent.keyDown(screen.getByLabelText("Meeting title"), { key: "Enter" });
+
+	release();
+	expect(await screen.findByDisplayValue("code-shown-once")).toBeTruthy();
+	expect(calls.filter((call) => call.path === "/api/meetings/create")).toHaveLength(1);
 });
 
 test("an empty title never reaches the service", async () => {
