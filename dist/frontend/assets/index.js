@@ -2328,7 +2328,6 @@ var STATUS_LABELS = {
 function status_label(status) {
 	return STATUS_LABELS[status] ?? status;
 }
-var TRANSITIONAL_STATUSES = ["closed", "processing", "deleting"];
 /**
  * Describe what changed between two list refreshes, for the screen-reader announcer.
  *
@@ -2339,7 +2338,9 @@ var TRANSITIONAL_STATUSES = ["closed", "processing", "deleting"];
  */
 function describe_meeting_changes(previous, next) {
 	const nextById = new Map(next.map((meeting) => [meeting.id, meeting]));
+	const previousIds = new Set(previous.map((meeting) => meeting.id));
 	const changes = [];
+	for (const meeting of next) if (!previousIds.has(meeting.id)) changes.push(`Meeting ${meeting.title} was added`);
 	for (const before of previous) {
 		const after = nextById.get(before.id);
 		if (!after) {
@@ -2573,11 +2574,19 @@ function MeetingRow(props) {
 		});
 	};
 	const handle_delete = () => {
-		setConfirmingDelete(false);
-		run("delete", async () => {
-			await api.delete_meeting(meeting.id);
-			props.onChanged();
-		});
+		setBusy("delete");
+		setError(null);
+		api.delete_meeting(meeting.id).then(
+			() => {
+				setBusy(null);
+				setConfirmingDelete(false);
+				props.onDeleted();
+			},
+			(actionError) => {
+				setBusy(null);
+				setError(get_error_message(actionError));
+			},
+		);
 	};
 	const handle_toggle_details = () => {
 		if (detailsOpen) {
@@ -2657,7 +2666,7 @@ function MeetingRow(props) {
 						className: "button button-danger",
 						disabled: busy !== null,
 						onClick: () => setConfirmingDelete(true),
-						children: busy === "delete" ? "Deleting…" : "Delete",
+						children: "Delete",
 					}),
 				],
 			}),
@@ -2668,7 +2677,7 @@ function MeetingRow(props) {
 							/* @__PURE__ */ createVNode("p", {
 								id: confirmDeleteId,
 								children:
-									"Delete this meeting? The meeting itself is gone for good. Its stored files move to the archive, so a member can restore them from Files.",
+									"Delete this meeting? The meeting itself is gone for good. Files still in its meeting folder move to the archive, so a member can restore them from Files.",
 							}),
 							/* @__PURE__ */ createVNode("div", {
 								className: "meeting-confirm-buttons",
@@ -2678,12 +2687,14 @@ function MeetingRow(props) {
 										type: "button",
 										className: "button button-danger",
 										"aria-describedby": confirmDeleteId,
+										disabled: busy === "delete",
 										onClick: handle_delete,
-										children: "Confirm delete",
+										children: busy === "delete" ? "Deleting…" : "Confirm delete",
 									}),
 									/* @__PURE__ */ createVNode("button", {
 										type: "button",
 										className: "button",
+										disabled: busy === "delete",
 										onClick: handle_cancel_delete,
 										children: "Cancel",
 									}),
@@ -2762,35 +2773,56 @@ function App(props) {
 	const [meetings, setMeetings] = useState(null);
 	const [listError, setListError] = useState(null);
 	const [created, setCreated] = useState(null);
-	const [announcement, setAnnouncement] = useState("");
+	const [announcement, setAnnouncement] = useState({
+		sequence: 0,
+		text: "",
+	});
 	const refreshingRef = useRef(false);
+	const refreshQueuedRef = useRef(false);
+	const meetingsHeadingRef = useRef(null);
 	const announcedMeetingsRef = useRef(null);
 	const refresh = useCallback(() => {
-		if (refreshingRef.current) return;
+		if (refreshingRef.current) {
+			refreshQueuedRef.current = true;
+			return;
+		}
 		refreshingRef.current = true;
 		setListError(null);
-		api.list_meetings().then(
-			(items) => {
+		api
+			.list_meetings()
+			.then(
+				(items) => {
+					const announced = announcedMeetingsRef.current;
+					announcedMeetingsRef.current = items;
+					if (announced !== null) {
+						const text = describe_meeting_changes(announced, items);
+						if (text !== "")
+							setAnnouncement((current) => ({
+								sequence: current.sequence + 1,
+								text,
+							}));
+					}
+					setMeetings(items);
+				},
+				(error) => {
+					setListError(get_error_message(error));
+				},
+			)
+			.finally(() => {
 				refreshingRef.current = false;
-				const announced = announcedMeetingsRef.current;
-				announcedMeetingsRef.current = items;
-				if (announced !== null) setAnnouncement(describe_meeting_changes(announced, items));
-				setMeetings(items);
-			},
-			(error) => {
-				refreshingRef.current = false;
-				setListError(get_error_message(error));
-			},
-		);
+				if (refreshQueuedRef.current) {
+					refreshQueuedRef.current = false;
+					refresh();
+				}
+			});
 	}, [api]);
 	useEffect(() => {
 		refresh();
 	}, [refresh]);
 	useEffect(() => {
-		if (meetings === null || !meetings.some((item) => TRANSITIONAL_STATUSES.includes(item.status))) return;
 		const timer = setInterval(refresh, 5e3);
 		return () => clearInterval(timer);
-	}, [meetings, refresh]);
+	}, [refresh]);
 	return /* @__PURE__ */ createVNode("div", {
 		className: "council",
 		children: [
@@ -2833,7 +2865,9 @@ function App(props) {
 				"aria-labelledby": "meetings-heading",
 				children: [
 					/* @__PURE__ */ createVNode("h2", {
+						ref: meetingsHeadingRef,
 						id: "meetings-heading",
+						tabIndex: -1,
 						children: "Meetings",
 					}),
 					listError !== null
@@ -2871,6 +2905,10 @@ function App(props) {
 													api,
 													meeting,
 													onChanged: refresh,
+													onDeleted: () => {
+														meetingsHeadingRef.current?.focus();
+														refresh();
+													},
 												},
 												meeting.id,
 											),
@@ -2882,7 +2920,7 @@ function App(props) {
 				className: "council-announcer visually-hidden",
 				role: "status",
 				"aria-live": "polite",
-				children: announcement,
+				children: announcement.text,
 			}),
 		],
 	});

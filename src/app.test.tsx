@@ -11,9 +11,7 @@ function make_client(): BonoboUiFrontendClient {
 	} as unknown as BonoboUiFrontendClient;
 }
 
-type RouteHandler = (
-	body: unknown,
-) => { status?: number; body: unknown } | Promise<{ status?: number; body: unknown }>;
+type RouteHandler = (body: unknown) => { status?: number; body: unknown } | Promise<{ status?: number; body: unknown }>;
 
 /**
  * Stub global fetch with per-path handlers, so each test declares only the Council routes it
@@ -49,7 +47,9 @@ afterEach(() => {
 
 test("lists meetings with their status", async () => {
 	stub_council({
-		"/api/meetings/list": () => ({ body: { meetings: [meeting("m1", "open", "Weekly sync"), meeting("m2", "ready", "Retro")] } }),
+		"/api/meetings/list": () => ({
+			body: { meetings: [meeting("m1", "open", "Weekly sync"), meeting("m2", "ready", "Retro")] },
+		}),
 	});
 	render(<App client={make_client()} />);
 
@@ -81,53 +81,101 @@ test("repair and delete states show human labels, never raw machine words", asyn
 	expect(screen.queryByText("create_unknown")).toBeNull();
 });
 
-test(
-	"a processing meeting refreshes by itself until it settles",
-	async () => {
-		let attempts = 0;
-		stub_council({
-			"/api/meetings/list": () => {
-				attempts += 1;
-				return attempts === 1
-					? { body: { meetings: [meeting("m1", "processing")] } }
-					: { body: { meetings: [meeting("m1", "ready")] } };
-			},
-		});
-		render(<App client={make_client()} />);
-		expect(await screen.findByText("Processing")).toBeTruthy();
+test("a processing meeting refreshes by itself until it settles", async () => {
+	let attempts = 0;
+	stub_council({
+		"/api/meetings/list": () => {
+			attempts += 1;
+			return attempts === 1
+				? { body: { meetings: [meeting("m1", "processing")] } }
+				: { body: { meetings: [meeting("m1", "ready")] } };
+		},
+	});
+	render(<App client={make_client()} />);
+	expect(await screen.findByText("Processing")).toBeTruthy();
 
-		// No reload and no click: the page polls transitional meetings on its own.
-		expect(await screen.findByText("Ready", {}, { timeout: 10000 })).toBeTruthy();
-	},
-	15000,
-);
+	// No reload and no click: the page polls transitional meetings on its own.
+	expect(await screen.findByText("Ready", {}, { timeout: 10000 })).toBeTruthy();
+}, 15000);
 
-test(
-	"a status change is announced to screen readers",
-	async () => {
-		let attempts = 0;
-		stub_council({
-			"/api/meetings/list": () => {
-				attempts += 1;
-				return attempts === 1
-					? { body: { meetings: [meeting("m1", "processing", "Weekly sync")] } }
-					: { body: { meetings: [meeting("m1", "ready", "Weekly sync")] } };
-			},
-		});
-		render(<App client={make_client()} />);
-		await screen.findByText("Processing");
+test("a status change is announced to screen readers", async () => {
+	let attempts = 0;
+	stub_council({
+		"/api/meetings/list": () => {
+			attempts += 1;
+			return attempts === 1
+				? { body: { meetings: [meeting("m1", "processing", "Weekly sync")] } }
+				: { body: { meetings: [meeting("m1", "ready", "Weekly sync")] } };
+		},
+	});
+	render(<App client={make_client()} />);
+	await screen.findByText("Processing");
 
-		// The new label alone is silent: a screen reader reads a status change only from a live
-		// region, so the assertion is on the region, not on the row text.
-		await waitFor(
-			() => {
-				expect(screen.getByRole("status").textContent).toBe("Meeting Weekly sync is now Ready");
+	// The new label alone is silent: a screen reader reads a status change only from a live
+	// region, so the assertion is on the region, not on the row text.
+	await waitFor(
+		() => {
+			expect(screen.getByRole("status").textContent).toBe("Meeting Weekly sync is now Ready");
+		},
+		{ timeout: 10000 },
+	);
+}, 15000);
+
+test("a meeting created elsewhere appears and is announced after the list settles", async () => {
+	let attempts = 0;
+	stub_council({
+		"/api/meetings/list": () => {
+			attempts += 1;
+			return attempts === 1
+				? { body: { meetings: [] } }
+				: { body: { meetings: [meeting("m2", "created", "Other tab meeting")] } };
+		},
+	});
+	render(<App client={make_client()} />);
+	await screen.findByText("No meetings yet. Create one above.");
+
+	expect(await screen.findByRole("heading", { level: 3, name: "Other tab meeting" }, { timeout: 10000 })).toBeTruthy();
+	await waitFor(
+		() => {
+			expect(screen.getByRole("status").textContent).toBe("Meeting Other tab meeting was added");
+		},
+		{ timeout: 10000 },
+	);
+}, 15000);
+
+test("an action refresh queued behind an in-flight list refresh is not lost", async () => {
+	let releaseFirstList!: () => void;
+	const firstListGate = new Promise<void>((resolve) => {
+		releaseFirstList = resolve;
+	});
+	let listAttempts = 0;
+	stub_council({
+		"/api/meetings/list": async () => {
+			listAttempts += 1;
+			if (listAttempts === 1) {
+				await firstListGate;
+				return { body: { meetings: [] } };
+			}
+			return { body: { meetings: [meeting("m9", "created", "Queued meeting")] } };
+		},
+		"/api/meetings/create": () => ({
+			body: {
+				meeting: meeting("m9", "created", "Queued meeting"),
+				joinCode: "queued-code",
+				guestUrl: "https://council.example.com/room?m=m9",
 			},
-			{ timeout: 10000 },
-		);
-	},
-	15000,
-);
+		}),
+	});
+	render(<App client={make_client()} />);
+
+	fireEvent.input(screen.getByLabelText("Meeting title"), { target: { value: "Queued meeting" } });
+	fireEvent.click(screen.getByRole("button", { name: "Create meeting" }));
+	await screen.findByDisplayValue("queued-code");
+	releaseFirstList();
+
+	expect(await screen.findByRole("heading", { level: 3, name: "Queued meeting" })).toBeTruthy();
+	expect(listAttempts).toBe(2);
+});
 
 test("a failed list shows an alert whose Retry reloads", async () => {
 	let attempts = 0;
@@ -167,7 +215,9 @@ test("creating a meeting shows the one-time join code with the cannot-retrieve w
 	expect(await screen.findByDisplayValue("code-shown-once")).toBeTruthy();
 	expect(screen.getByDisplayValue("https://council.example.com/room?m=m9")).toBeTruthy();
 	expect(screen.getByText(/shown only this once and cannot be retrieved again/)).toBeTruthy();
-	expect(calls.some((call) => call.path === "/api/meetings/create" && JSON.stringify(call.body) === '{"title":"Planning"}')).toBe(true);
+	expect(
+		calls.some((call) => call.path === "/api/meetings/create" && JSON.stringify(call.body) === '{"title":"Planning"}'),
+	).toBe(true);
 });
 
 test("create works without native form submission (sandbox has no allow-forms)", async () => {
@@ -254,7 +304,9 @@ test("delete fires only after the inline confirmation", async () => {
 
 	fireEvent.click(screen.getByRole("button", { name: "Confirm delete" }));
 	await waitFor(() => {
-		expect(calls.some((call) => call.path === "/api/meetings/delete" && JSON.stringify(call.body) === '{"meetingId":"m1"}')).toBe(true);
+		expect(
+			calls.some((call) => call.path === "/api/meetings/delete" && JSON.stringify(call.body) === '{"meetingId":"m1"}'),
+		).toBe(true);
 	});
 });
 
@@ -309,6 +361,36 @@ test("cancelling the delete confirmation returns focus to Delete", async () => {
 	fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
 
 	expect(document.activeElement).toBe(deleteButton);
+});
+
+test("a confirmed delete keeps focus stable, then moves it to the Meetings heading", async () => {
+	let releaseDelete!: () => void;
+	const deleteGate = new Promise<void>((resolve) => {
+		releaseDelete = resolve;
+	});
+	let deleted = false;
+	stub_council({
+		"/api/meetings/list": () => ({ body: { meetings: deleted ? [] : [meeting("m1", "closed")] } }),
+		"/api/meetings/delete": async () => {
+			await deleteGate;
+			deleted = true;
+			return { body: {} };
+		},
+	});
+	render(<App client={make_client()} />);
+	await screen.findByText("Meeting m1");
+
+	fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+	const confirm = await screen.findByRole("button", { name: "Confirm delete" });
+	fireEvent.click(confirm);
+	expect(document.activeElement).toBe(confirm);
+	expect(screen.getByRole("button", { name: "Deleting…" })).toBe(confirm);
+	expect(screen.getByRole("button", { name: "Cancel" }).hasAttribute("disabled")).toBe(true);
+
+	releaseDelete();
+	await waitFor(() => {
+		expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Meetings" }));
+	});
 });
 
 test("an open meeting offers the single-use host room link as a copyable value", async () => {

@@ -27,8 +27,6 @@ function status_label(status: string) {
 	return STATUS_LABELS[status] ?? status;
 }
 
-const TRANSITIONAL_STATUSES = ["closed", "processing", "deleting"];
-
 /**
  * Describe what changed between two list refreshes, for the screen-reader announcer.
  *
@@ -39,7 +37,13 @@ const TRANSITIONAL_STATUSES = ["closed", "processing", "deleting"];
  */
 function describe_meeting_changes(previous: CouncilMeeting[], next: CouncilMeeting[]) {
 	const nextById = new Map(next.map((meeting) => [meeting.id, meeting]));
+	const previousIds = new Set(previous.map((meeting) => meeting.id));
 	const changes: string[] = [];
+	for (const meeting of next) {
+		if (!previousIds.has(meeting.id)) {
+			changes.push(`Meeting ${meeting.title} was added`);
+		}
+	}
 
 	for (const before of previous) {
 		const after = nextById.get(before.id);
@@ -103,7 +107,11 @@ export function CopyRow(props: { label: string; value: string }) {
 				</button>
 			</div>
 			<span className="copy-row-status" role="status">
-				{copyState === "copied" ? "Copied." : copyState === "failed" ? "Copy failed — select the text and copy it manually." : ""}
+				{copyState === "copied"
+					? "Copied."
+					: copyState === "failed"
+						? "Copy failed — select the text and copy it manually."
+						: ""}
 			</span>
 		</div>
 	);
@@ -211,6 +219,7 @@ type MeetingRow_Props = {
 	api: CouncilApi;
 	meeting: CouncilMeeting;
 	onChanged: () => void;
+	onDeleted: () => void;
 };
 
 export function MeetingRow(props: MeetingRow_Props) {
@@ -273,11 +282,19 @@ export function MeetingRow(props: MeetingRow_Props) {
 	};
 
 	const handle_delete = () => {
-		setConfirmingDelete(false);
-		run("delete", async () => {
-			await api.delete_meeting(meeting.id);
-			props.onChanged();
-		});
+		setBusy("delete");
+		setError(null);
+		api.delete_meeting(meeting.id).then(
+			() => {
+				setBusy(null);
+				setConfirmingDelete(false);
+				props.onDeleted();
+			},
+			(actionError: unknown) => {
+				setBusy(null);
+				setError(get_error_message(actionError));
+			},
+		);
 	};
 
 	const handle_toggle_details = () => {
@@ -334,7 +351,7 @@ export function MeetingRow(props: MeetingRow_Props) {
 					disabled={busy !== null}
 					onClick={() => setConfirmingDelete(true)}
 				>
-					{busy === "delete" ? "Deleting…" : "Delete"}
+					Delete
 				</button>
 			</div>
 			{/* Not an `alertdialog`: that role promises a modal, and the rest of the row stays usable
@@ -342,8 +359,8 @@ export function MeetingRow(props: MeetingRow_Props) {
 			{confirmingDelete ? (
 				<div className="meeting-confirm">
 					<p id={confirmDeleteId}>
-						Delete this meeting? The meeting itself is gone for good. Its stored files move to the archive, so a
-						member can restore them from Files.
+						Delete this meeting? The meeting itself is gone for good. Files still in its meeting folder move to the
+						archive, so a member can restore them from Files.
 					</p>
 					<div className="meeting-confirm-buttons">
 						{/* The description sits on the button, not on the panel around it. A description on a
@@ -353,11 +370,12 @@ export function MeetingRow(props: MeetingRow_Props) {
 							type="button"
 							className="button button-danger"
 							aria-describedby={confirmDeleteId}
+							disabled={busy === "delete"}
 							onClick={handle_delete}
 						>
-							Confirm delete
+							{busy === "delete" ? "Deleting…" : "Confirm delete"}
 						</button>
-						<button type="button" className="button" onClick={handle_cancel_delete}>
+						<button type="button" className="button" disabled={busy === "delete"} onClick={handle_cancel_delete}>
 							Cancel
 						</button>
 					</div>
@@ -367,8 +385,8 @@ export function MeetingRow(props: MeetingRow_Props) {
 				<div className="meeting-room-link">
 					<CopyRow label="Your host room link" value={roomUrl} />
 					<p className="panel-hint">
-						Open this link in a new browser tab to join as the host. It is single-use and expires soon; get a fresh
-						one here if it stops working.
+						Open this link in a new browser tab to join as the host. It is single-use and expires soon; get a fresh one
+						here if it stops working.
 					</p>
 				</div>
 			) : null}
@@ -381,7 +399,9 @@ export function MeetingRow(props: MeetingRow_Props) {
 								{details.artifacts.map((artifact) => (
 									<li key={artifact.fileNodeId ?? artifact.name}>
 										{artifact.name}
-										{artifact.fileNodeId !== null ? <span className="meeting-artifact-id"> · {artifact.fileNodeId}</span> : null}
+										{artifact.fileNodeId !== null ? (
+											<span className="meeting-artifact-id"> · {artifact.fileNodeId}</span>
+										) : null}
 									</li>
 								))}
 							</ul>
@@ -409,51 +429,61 @@ export function App(props: { client: BonoboUiFrontendClient }) {
 	const [meetings, setMeetings] = useState<CouncilMeeting[] | null>(null);
 	const [listError, setListError] = useState<string | null>(null);
 	const [created, setCreated] = useState<CouncilCreatedMeeting | null>(null);
-	const [announcement, setAnnouncement] = useState("");
+	const [announcement, setAnnouncement] = useState({ sequence: 0, text: "" });
 	// Single-flight guard for the async list refresh; a ref keeps it exact across renders.
 	const refreshingRef = useRef(false);
+	// Keep one missed refresh. An action can finish while a poll is still in flight.
+	const refreshQueuedRef = useRef(false);
+	const meetingsHeadingRef = useRef<HTMLHeadingElement | null>(null);
 	// The list as the member last saw it. Only the comparison against the next list can tell that a
 	// meeting settled or disappeared, and a ref keeps it out of the render that reads it.
 	const announcedMeetingsRef = useRef<CouncilMeeting[] | null>(null);
 
 	const refresh = useCallback(() => {
 		if (refreshingRef.current) {
+			refreshQueuedRef.current = true;
 			return;
 		}
 		refreshingRef.current = true;
 		setListError(null);
-		api.list_meetings().then(
-			(items) => {
+		api
+			.list_meetings()
+			.then(
+				(items) => {
+					const announced = announcedMeetingsRef.current;
+					announcedMeetingsRef.current = items;
+					// Skip the first load: arriving meetings are not a change the member should hear.
+					if (announced !== null) {
+						const text = describe_meeting_changes(announced, items);
+						if (text !== "") {
+							setAnnouncement((current) => ({ sequence: current.sequence + 1, text }));
+						}
+					}
+					setMeetings(items);
+				},
+				(error: unknown) => {
+					setListError(get_error_message(error));
+				},
+			)
+			.finally(() => {
 				refreshingRef.current = false;
-				const announced = announcedMeetingsRef.current;
-				announcedMeetingsRef.current = items;
-				// Skip the first load: arriving meetings are not a change the member should hear.
-				if (announced !== null) {
-					setAnnouncement(describe_meeting_changes(announced, items));
+				if (refreshQueuedRef.current) {
+					refreshQueuedRef.current = false;
+					refresh();
 				}
-				setMeetings(items);
-			},
-			(error: unknown) => {
-				refreshingRef.current = false;
-				setListError(get_error_message(error));
-			},
-		);
+			});
 	}, [api]);
 
 	useEffect(() => {
 		refresh();
 	}, [refresh]);
 
-	// Meetings in these states change on their own (close handoff, the processing pipeline, the
-	// delete workflow). Refresh until they settle, so "Processing" becomes "Ready" without a
-	// manual reload. A tombstoned meeting drops out of the list, which also stops the polling.
+	// This page has no Convex subscription. Keep polling after meetings settle so another member's
+	// new meeting also appears without a reload.
 	useEffect(() => {
-		if (meetings === null || !meetings.some((item) => TRANSITIONAL_STATUSES.includes(item.status))) {
-			return;
-		}
 		const timer = setInterval(refresh, 5000);
 		return () => clearInterval(timer);
-	}, [meetings, refresh]);
+	}, [refresh]);
 
 	return (
 		<div className="council">
@@ -485,7 +515,9 @@ export function App(props: { client: BonoboUiFrontendClient }) {
 			)}
 
 			<section className="council-meetings" aria-labelledby="meetings-heading">
-				<h2 id="meetings-heading">Meetings</h2>
+				<h2 ref={meetingsHeadingRef} id="meetings-heading" tabIndex={-1}>
+					Meetings
+				</h2>
 				{listError !== null ? (
 					<div className="council-status is-error" role="alert">
 						<span>{listError}</span>
@@ -502,7 +534,16 @@ export function App(props: { client: BonoboUiFrontendClient }) {
 				) : (
 					<ul className="meeting-list">
 						{meetings.map((meeting) => (
-							<MeetingRow key={meeting.id} api={api} meeting={meeting} onChanged={refresh} />
+							<MeetingRow
+								key={meeting.id}
+								api={api}
+								meeting={meeting}
+								onChanged={refresh}
+								onDeleted={() => {
+									meetingsHeadingRef.current?.focus();
+									refresh();
+								}}
+							/>
 						))}
 					</ul>
 				)}
@@ -511,7 +552,7 @@ export function App(props: { client: BonoboUiFrontendClient }) {
 			{/* Keep this mounted at all times. A live region that appears together with its first
 			    message is announced unreliably, because the screen reader has nothing to watch yet. */}
 			<div className="council-announcer visually-hidden" role="status" aria-live="polite">
-				{announcement}
+				{announcement.text}
 			</div>
 		</div>
 	);
