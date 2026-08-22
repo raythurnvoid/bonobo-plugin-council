@@ -2,7 +2,7 @@
 // The default happy-dom environment rewrites import.meta.url to an http URL, which breaks the
 // file reads below; this test only touches the filesystem, so it runs under node.
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 import { COUNCIL_SERVICE_ORIGIN } from "./council-api";
 
@@ -34,7 +34,7 @@ describe("bonobo.plugin.json", () => {
 		expect(manifest.name).toBe("council");
 		expect(manifest.schemaVersion).toBe(1);
 		expect(manifest.compatibility.bonoboPluginRuntime).toBe("1");
-		expect(manifest.version).toMatch(/^[0-9]+\.[0-9]+\.[0-9]+$/);
+		expect(manifest.version).toBe("0.2.0");
 		expect(manifest.displayName.length).toBeLessThanOrEqual(80);
 		expect(manifest.description.length).toBeLessThanOrEqual(2000);
 	});
@@ -56,6 +56,7 @@ describe("bonobo.plugin.json", () => {
 			"plugin.data.write",
 			"plugin.service.connect",
 			"ui.outbound.fetch",
+			"workspace.files.create-read-only",
 			"workspace.files.write",
 		]);
 	});
@@ -82,6 +83,20 @@ describe("bonobo.plugin.json", () => {
 			total += file.bytes;
 		}
 		expect(total).toBeLessThanOrEqual(16 * 1024 * 1024);
+	});
+
+	test("lists every emitted frontend file once in sorted order", () => {
+		const collect = (directory: URL): string[] =>
+			readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+				const child = new URL(`${entry.name}${entry.isDirectory() ? "/" : ""}`, directory);
+				return entry.isDirectory() ? collect(child) : [child.pathname.split("/dist/frontend/")[1]!];
+			});
+		const emitted = collect(new URL("../dist/frontend/", import.meta.url))
+			.map((path) => `dist/frontend/${decodeURIComponent(path)}`)
+			.sort();
+
+		expect(manifest.files.map((file) => file.path)).toEqual(emitted);
+		expect(new Set(manifest.files.map((file) => file.path)).size).toBe(manifest.files.length);
 	});
 
 	test("matches the built dist bytes exactly, including the dist manifest copy", () => {

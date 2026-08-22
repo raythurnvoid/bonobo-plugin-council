@@ -36,7 +36,9 @@ describe("create_council_api", () => {
 	test("a 401 refreshes the token once and retries", async () => {
 		const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
 			const bearer = (init.headers as Record<string, string>).Authorization;
-			return bearer === "Bearer plu_fresh" ? json_response(200, { meetings: [] }) : json_response(401, { message: "Unauthenticated" });
+			return bearer === "Bearer plu_fresh"
+				? json_response(200, { meetings: [] })
+				: json_response(401, { message: "Unauthenticated" });
 		});
 		vi.stubGlobal("fetch", fetchMock);
 		const client = make_client(["plu_stale", "plu_fresh"]);
@@ -92,10 +94,58 @@ describe("create_council_api", () => {
 			title: "Standup",
 			status: "created",
 			createdAt: null,
+			openedAt: null,
+			closedAt: null,
 			deadlineAt: null,
+			participantCount: null,
 			maxParticipants: null,
+			destinationPath: null,
 			failureReason: null,
+			artifacts: [],
 		});
+	});
+
+	test("list keeps meeting history fields and finalized artifact summaries", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () =>
+				json_response(200, {
+					meetings: [
+						{
+							id: "m1",
+							title: "Standup",
+							status: "ready",
+							createdAt: 100,
+							openedAt: 200,
+							closedAt: 300,
+							participantCount: 4,
+							destinationPath: "/meetings/m1",
+							artifacts: [
+								{ kind: "track_audio", name: "speaker-a.webm", fileNodeId: "node-private" },
+								{ kind: "transcript_markdown", name: "transcript.md", fileNodeId: "node-private-2" },
+								{ kind: "summary_markdown", name: "summary.md" },
+								{ kind: "provider_transcript", name: "provider-transcript.json" },
+							],
+						},
+					],
+				}),
+			),
+		);
+		const api = create_council_api(make_client(["plu_first"]));
+
+		const [listed] = await api.list_meetings();
+		expect(listed).toMatchObject({
+			openedAt: 200,
+			closedAt: 300,
+			participantCount: 4,
+			destinationPath: "/meetings/m1",
+		});
+		expect(listed?.artifacts).toEqual([
+			{ kind: "track_audio", name: "speaker-a.webm" },
+			{ kind: "transcript_markdown", name: "transcript.md" },
+			{ kind: "summary_markdown", name: "summary.md" },
+			{ kind: "provider_transcript", name: "provider-transcript.json" },
+		]);
 	});
 
 	test("a list response without the expected shape is refused, not rendered", async () => {
@@ -118,13 +168,45 @@ describe("create_council_api", () => {
 		expect(init.body).toBe(JSON.stringify({ meetingId: "m1" }));
 	});
 
-	test("get tolerates missing artifacts and keeps named ones", async () => {
+	test("mutation responses are validated and returned for immediate UI updates", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (url: string) => {
+				if (url.endsWith("/open")) {
+					return json_response(200, { meeting: { id: "m1", title: "Standup", status: "open" } });
+				}
+				return json_response(200, { status: url.endsWith("/close") ? "processing" : "deleting" });
+			}),
+		);
+		const api = create_council_api(make_client(["plu_first"]));
+
+		await expect(api.open_meeting("m1")).resolves.toMatchObject({ id: "m1", status: "open" });
+		await expect(api.close_meeting("m1")).resolves.toBe("processing");
+		await expect(api.delete_meeting("m1")).resolves.toBe("deleting");
+	});
+
+	test("a malformed mutation response is refused", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => json_response(200, {})),
+		);
+		const api = create_council_api(make_client(["plu_first"]));
+
+		await expect(api.open_meeting("m1")).rejects.toThrow("Unexpected response from the Council service");
+		await expect(api.close_meeting("m1")).rejects.toThrow("Unexpected response from the Council service");
+		await expect(api.delete_meeting("m1")).rejects.toThrow("Unexpected response from the Council service");
+	});
+
+	test("get keeps known artifact summaries", async () => {
 		vi.stubGlobal(
 			"fetch",
 			vi.fn(async () =>
 				json_response(200, {
 					meeting: { id: "m1", title: "Standup", status: "ready" },
-					artifacts: [{ name: "standup.mp4", fileNodeId: "node1" }, { path: "/Meetings/standup.md" }, 42],
+					artifacts: [
+						{ kind: "track_audio", name: "standup.webm", fileNodeId: "node1" },
+						{ kind: "transcript_markdown", path: "/Meetings/standup.md" },
+					],
 				}),
 			),
 		);
@@ -133,9 +215,30 @@ describe("create_council_api", () => {
 		const details = await api.get_meeting("m1");
 		expect(details.meeting.failureReason).toBeNull();
 		expect(details.artifacts).toEqual([
-			{ name: "standup.mp4", fileNodeId: "node1" },
-			{ name: "/Meetings/standup.md", fileNodeId: null },
+			{ kind: "track_audio", name: "standup.webm" },
+			{ kind: "transcript_markdown", name: "/Meetings/standup.md" },
 		]);
+	});
+
+	test("list refuses an unknown artifact kind", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () =>
+				json_response(200, {
+					meetings: [
+						{
+							id: "m1",
+							title: "Standup",
+							status: "ready",
+							artifacts: [{ kind: "raw_node", name: "node-id" }],
+						},
+					],
+				}),
+			),
+		);
+		const api = create_council_api(make_client(["plu_first"]));
+
+		await expect(api.list_meetings()).rejects.toThrow("Unexpected response from the Council service");
 	});
 
 	test("get keeps a string failureReason on a failed meeting", async () => {
