@@ -61,6 +61,17 @@ describe("bonobo.plugin.json", () => {
 		]);
 	});
 
+	test("keeps each capability explained in the reviewable bundle", () => {
+		const frontendJavaScript = manifest.files.find((file) => file.contentType === "application/javascript")!;
+		const source = readFileSync(new URL(`../${frontendJavaScript.path}`, import.meta.url), "utf8");
+
+		// The publisher reviews only shipped files. Keep the service-side permissions next to the
+		// Worker request so the source-bound review can account for every consent line.
+		for (const capability of manifest.capabilities) {
+			expect(source).toContain(`\`${capability}\``);
+		}
+	});
+
 	test("allows the page to reach exactly the Council service origin", () => {
 		expect(manifest.uiOutboundOrigins).toEqual([COUNCIL_SERVICE_ORIGIN]);
 		// No backend worker ships, so backend egress consents to nothing.

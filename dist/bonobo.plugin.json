@@ -40,8 +40,8 @@
 		},
 		{
 			"path": "dist/frontend/assets/index.js",
-			"sha256": "sha256:85c80510e18ef106e5a7db1a4dc773ea0b4c892fdbb84192a8e0080c64c27e95",
-			"bytes": 263606,
+			"sha256": "sha256:a2290ccd8600bb0508011d503c539e0b9a12bb070ee8c414f1ca366699cbb626",
+			"bytes": 264073,
 			"contentType": "application/javascript"
 		},
 		{
