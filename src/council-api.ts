@@ -48,11 +48,6 @@ export type CouncilCreatedMeeting = {
 	guestUrl: string;
 };
 
-export type CouncilMeetingDetails = {
-	meeting: CouncilMeeting;
-	artifacts: CouncilArtifact[];
-};
-
 function as_record(value: unknown): Record<string, unknown> | null {
 	return typeof value === "object" && value !== null && !Array.isArray(value)
 		? (value as Record<string, unknown>)
@@ -70,34 +65,40 @@ const ARTIFACT_KINDS = new Set<CouncilArtifactKind>([
 	"provider_transcript",
 ]);
 
-function parse_artifact(value: unknown): CouncilArtifact | null {
-	const record = as_record(value);
-	if (!record || typeof record.kind !== "string" || !ARTIFACT_KINDS.has(record.kind as CouncilArtifactKind)) {
-		return null;
-	}
-	const name = typeof record.name === "string" ? record.name : typeof record.path === "string" ? record.path : null;
-	if (name === null) {
-		return null;
-	}
-	return { kind: record.kind as CouncilArtifactKind, name };
-}
-
+/**
+ * Read the artifact rows the dashboard renders, and skip a row it has no label for.
+ *
+ * The service can add a fifth artifact kind at any time, and an installed copy of this page keeps
+ * running against the new service. If one unknown kind refused the whole list, the meeting would
+ * stop parsing and the dashboard would go empty for EVERY meeting until every member upgrades. So
+ * an unknown kind loses only its own row. A row without a name is a different case: `artifacts_view`
+ * in the service always sends `name`, so a row without one is a broken response, not an older one.
+ */
 function parse_artifacts(value: unknown): CouncilArtifact[] | null {
 	if (!Array.isArray(value)) {
 		return null;
 	}
 	const artifacts: CouncilArtifact[] = [];
 	for (const item of value) {
-		const artifact = parse_artifact(item);
-		if (!artifact) {
+		const record = as_record(item);
+		if (!record) {
 			return null;
 		}
-		artifacts.push(artifact);
+
+		// Drop a kind this build cannot label instead of refusing the meeting.
+		if (typeof record.kind !== "string" || !ARTIFACT_KINDS.has(record.kind as CouncilArtifactKind)) {
+			continue;
+		}
+
+		if (typeof record.name !== "string") {
+			return null;
+		}
+		artifacts.push({ kind: record.kind as CouncilArtifactKind, name: record.name });
 	}
 	return artifacts;
 }
 
-function parse_meeting(value: unknown, artifactsRequired = false): CouncilMeeting | null {
+function parse_meeting(value: unknown): CouncilMeeting | null {
 	const record = as_record(value);
 	if (
 		!record ||
@@ -107,7 +108,10 @@ function parse_meeting(value: unknown, artifactsRequired = false): CouncilMeetin
 	) {
 		return null;
 	}
-	const artifacts = record.artifacts === undefined && !artifactsRequired ? [] : parse_artifacts(record.artifacts);
+
+	// Every meeting the service sends comes from its `meeting_view`, which always emits `artifacts`.
+	// A meeting without that list is a broken response, not an older one.
+	const artifacts = parse_artifacts(record.artifacts);
 	if (artifacts === null) {
 		return null;
 	}
@@ -168,7 +172,7 @@ export function create_council_api(client: { getToken(): Promise<string>; refres
 			}
 			const meetings: CouncilMeeting[] = [];
 			for (const value of data.meetings) {
-				const meeting = parse_meeting(value, true);
+				const meeting = parse_meeting(value);
 				if (!meeting) {
 					throw unexpected_response("list");
 				}
@@ -186,19 +190,8 @@ export function create_council_api(client: { getToken(): Promise<string>; refres
 			return { meeting, joinCode: data.joinCode, guestUrl: data.guestUrl };
 		},
 
-		async get_meeting(meetingId: string): Promise<CouncilMeetingDetails> {
-			const data = as_record(await post("/api/meetings/get", { meetingId }));
-			const meeting = data ? parse_meeting(data.meeting) : null;
-			if (!data || !meeting) {
-				throw unexpected_response("get");
-			}
-			const artifacts = parse_artifacts(data.artifacts);
-			if (artifacts === null) {
-				throw unexpected_response("get");
-			}
-			return { meeting, artifacts };
-		},
-
+		// Open answers the updated meeting, not a bare status: the dashboard needs the new deadline
+		// and opened time to redraw the card without waiting for the next poll.
 		async open_meeting(meetingId: string): Promise<CouncilMeeting> {
 			const data = as_record(await post("/api/meetings/open", { meetingId }));
 			const meeting = data ? parse_meeting(data.meeting) : null;

@@ -14,6 +14,14 @@
 	border: 0;
 }
 
+/* This page runs in a sandboxed iframe with its own document, so it inherits no color scheme from
+   the app around it. Tell the browser the page is dark. Without this a member whose browser is in
+   light mode gets a near-white scrollbar down the near-black page below, and light form controls
+   and text caret with it. The room page says the same thing in its own stylesheet. */
+:root {
+	color-scheme: dark;
+}
+
 html,
 body {
 	margin: 0;
@@ -74,12 +82,12 @@ body {
 		transform 140ms ease;
 }
 
-.button:hover:not(:disabled) {
+.button:hover:not(:disabled):not([aria-busy="true"]) {
 	border-color: #50586b;
 	background: #252b38;
 }
 
-.button:active:not(:disabled) {
+.button:active:not(:disabled):not([aria-busy="true"]) {
 	transform: translateY(1px);
 }
 
@@ -90,8 +98,39 @@ body {
 	outline-offset: 3px;
 }
 
+/* A button that is waiting for an answer marks itself busy instead of disabling itself, so it keeps
+   the focus of the member who just pressed it. It still has to stop looking pressable. Otherwise it
+   lightens under the pointer and dips on every further press while it acts on none of them, which
+   tells the member the press landed when it did not. So the hover and press rules above skip a busy
+   button, and a busy button dims like a disabled one. The room page pairs the same two rules for its
+   own buttons and controls.
+
+   Guard every hover rule, not only the one on `.button`. `.button-primary:hover` and
+   `.button-danger:hover` below repaint the same button. Guarding one of those alone would drop a
+   busy primary or danger button back onto the grey `.button:hover` fill, which paints the wrong
+   colour instead of painting no hover at all.
+
+   Each busy button also swaps its label to `Creating…`, `Opening…`, `Getting link…`, `Closing…`,
+   `Deleting…` or `Retrying…`. That label is the sentence a member reads to learn what the page is
+   doing, so the dim must not fade it.
+
+   That is why the two states no longer share one rule. A disabled button is an inactive control and
+   WCAG 1.4.3 asks nothing of its label, so `opacity` may fade the whole box. A busy button is not
+   inactive: it stays enabled, keeps its place in the tab order, and the browser reports it as
+   pressable. `opacity` fades a label and a fill by the same factor, and measured on a card here that
+   took `Creating…` from 4.94:1 to 3.14:1 and `Deleting…` from 9.51:1 to 3.74:1, both under the 4.5:1
+   a 14px label needs. So each busy family dims its own fill below and leaves `color` alone. Raising
+   the opacity is not a way out: both sides fade together, so 0.75 reaches only about 4.1:1.
+
+   Give every family that can go busy its own rule, for the same reason the hover rules above are
+   each guarded. A single rule on `.button` would out-rank `.button-primary` and paint a busy primary
+   button in the plain `.button` fill. The three families below are the ones `app.tsx` marks busy. */
 .button:disabled {
 	opacity: 0.55;
+	cursor: default;
+}
+
+.button[aria-busy="true"] {
 	cursor: default;
 }
 
@@ -101,13 +140,31 @@ body {
 	color: #ffffff;
 }
 
-.button-primary:hover:not(:disabled) {
+.button-primary:hover:not(:disabled):not([aria-busy="true"]) {
 	border-color: #5865f2;
 	background: #5865f2;
 }
 
+/* `Creating…`, `Opening…` and `Getting link…`. White on this fill stays above 9.2:1. Read every
+   ratio in this group as a floor, not as one number: a translucent fill lets the `.council` radial
+   gradient through the card behind it, so the exact value moves with where the card sits. This one
+   measures 9.27:1 clear of the gradient and 9.21:1 at its strongest. */
+.button-primary[aria-busy="true"] {
+	border-color: color-mix(in srgb, #5461e8 55%, transparent);
+	background: color-mix(in srgb, #5461e8 55%, transparent);
+}
+
 .button-quiet {
 	background: #141821;
+}
+
+/* `Closing…` and `Retrying…`. This fill is already darker than the card behind it, so fading it
+   moves the button toward the card and its outline is what carries most of the change. Dim the
+   border with it, or a quiet busy button looks no different from a pressable one. The label holds
+   above 16.6:1. */
+.button-quiet[aria-busy="true"] {
+	border-color: color-mix(in srgb, #343947 55%, transparent);
+	background: color-mix(in srgb, #141821 55%, transparent);
 }
 
 .button-danger {
@@ -116,9 +173,16 @@ body {
 	color: #ffaaa7;
 }
 
-.button-danger:hover:not(:disabled) {
+.button-danger:hover:not(:disabled):not([aria-busy="true"]) {
 	border-color: #a34b4e;
 	background: #321d20;
+}
+
+/* `Deleting…`. The label holds above 9.7:1. It shows on `.meeting-confirm`, which is darker than
+   the card, so that floor has room to spare there. */
+.button-danger[aria-busy="true"] {
+	border-color: color-mix(in srgb, #7a3739 55%, transparent);
+	background: color-mix(in srgb, #251719 55%, transparent);
 }
 
 .council {
@@ -129,10 +193,6 @@ body {
 }
 
 .council-header {
-	display: flex;
-	align-items: flex-end;
-	justify-content: space-between;
-	gap: 24px;
 	max-width: 1540px;
 	margin: 0 auto 30px;
 	padding-bottom: 26px;
@@ -160,11 +220,6 @@ body {
 	margin: 8px 0 0;
 	color: #abb2bf;
 	font-size: clamp(15px, 1.8vw, 18px);
-}
-
-.council-new-meeting {
-	flex: 0 0 auto;
-	min-width: 150px;
 }
 
 .council-layout {
@@ -213,9 +268,21 @@ body {
 	font-size: 20px;
 }
 
+/* These are the paragraphs and headings the page moves focus to after an action. A browser draws no
+   default ring when a script focuses a `tabindex="-1"` element, so without this rule a sighted
+   keyboard member sees the focus vanish. `.panel-hint` covers the opened-meeting notice and the
+   host-room-link notice. `.meeting-confirm p` covers the delete warning, which carries no class of
+   its own. From that warning the next Tab reaches Confirm delete, the only press on this page that
+   destroys a meeting, so the member must be able to see where the confirmation put them.
+   `.meeting-title` covers the card title, where closing a meeting and opening one from its card land
+   the member once the button they pressed is taken away. */
+.council-create h2:focus,
 .created-panel h2:focus,
 .meetings-heading-row h2:focus,
-.form-error:focus {
+.meeting-title:focus,
+.form-error:focus,
+.panel-hint:focus,
+.meeting-confirm p:focus {
 	outline: 2px solid #8fb4ff;
 	outline-offset: 4px;
 }
@@ -237,12 +304,17 @@ body {
 	font-weight: 700;
 }
 
+/* The border is the only thing that draws these fields. Their own #0c0f15 fill is 1.06:1 against
+   every panel they sit in, so a member who cannot see the border sees no field at all, only a
+   floating label. WCAG 1.4.11 asks for 3:1 on that boundary. #363d4d gave 1.67:1; #666c7e gives
+   3.46:1 against the create panel, 3.55:1 against the darker blocks inside a meeting card, and
+   3.66:1 against the fill on the inside edge. Do not darken it again. */
 .field input,
 .copy-row-input {
 	width: 100%;
 	min-height: 46px;
 	padding: 9px 12px;
-	border: 1px solid #363d4d;
+	border: 1px solid #666c7e;
 	border-radius: 10px;
 	background: #0c0f15;
 	color: #f3f5f8;
@@ -483,6 +555,17 @@ body {
 	color: #ffaaa7;
 }
 
+/*
+ * Keep an expired meeting neutral. Nobody opened it within the day, so it only lapsed. It is not a
+ * failure and must not borrow the red pill. The grey still needs its own filled background, because
+ * every other status pill is filled and this one would otherwise be the only transparent one.
+ */
+.meeting-status-expired {
+	border-color: #444b5c;
+	background: #1a1d24;
+	color: #b8bfcb;
+}
+
 .meeting-facts {
 	display: grid;
 	grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -551,10 +634,22 @@ body {
 	margin-top: auto;
 }
 
+/*
+ * Every action keeps its own width, and Delete goes last with the free space in front of it.
+ * Stretching them to fill the row made Delete the widest control on most cards: on a card whose only
+ * action is Delete it became a full-width red bar, and on a card with a real primary action it was
+ * twice that action's width.
+ */
 .meeting-actions .button {
-	flex: 1 1 136px;
+	flex: 0 1 auto;
 }
 
+.meeting-actions .button-danger {
+	flex: 0 0 auto;
+	margin-inline-start: auto;
+}
+
+.meeting-guest,
 .meeting-confirm,
 .meeting-room-link {
 	margin-top: 15px;
@@ -562,6 +657,25 @@ body {
 	border: 1px solid #353c4b;
 	border-radius: 12px;
 	background: #0f131a;
+}
+
+/* This block sits above the actions instead of below them, so it carries its own bottom gap. */
+.meeting-guest {
+	margin-bottom: 16px;
+}
+
+.meeting-guest .panel-hint {
+	margin-bottom: 0;
+}
+
+/* Here the notice leads the block instead of following it, because it is the focus target. So the
+   block loses its top gap and the copy row closes it. */
+.meeting-room-link .panel-hint {
+	margin-top: 0;
+}
+
+.meeting-room-link .copy-row {
+	margin-bottom: 0;
 }
 
 .meeting-confirm p {
@@ -599,13 +713,7 @@ body {
 	}
 
 	.council-header {
-		align-items: stretch;
-		flex-direction: column;
 		margin-bottom: 22px;
-	}
-
-	.council-new-meeting {
-		width: 100%;
 	}
 
 	.meeting-list {
@@ -639,7 +747,10 @@ body {
 		transition: none;
 	}
 
-	.button:active:not(:disabled) {
+	/* Repeat the busy guard the press rule above carries. A media query adds no specificity of its
+	   own, so without the guard this selector is one step less specific than that rule, that rule
+	   wins, and the press dip comes back for the member who asked for less motion. */
+	.button:active:not(:disabled):not([aria-busy="true"]) {
 		transform: none;
 	}
 }

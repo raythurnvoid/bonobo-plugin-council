@@ -40,20 +40,26 @@ function snapshot() {
 	);
 }
 
-// The publisher uploads the committed bytes, so take their fingerprint before the first build
-// overwrites them. Two fresh builds only prove that the build repeats itself. They can both agree
-// while the files on disk were built from older sources.
-const committed = snapshot();
+// Fingerprint the release files as they sit on disk, before the first build overwrites them. Two
+// fresh builds only prove that the build repeats itself. They can both agree while the files on
+// disk were built from older sources.
+// This check reads the working tree with `readFileSync`. It never asks git anything, so it cannot
+// say whether the files on disk are the committed ones. The release checklist in README.md checks
+// that separately with `git status` after the commit, because the publisher reads the files from
+// GitHub at the pinned commit.
+const onDisk = snapshot();
 run_build();
 const first = snapshot();
 run_build();
 const second = snapshot();
-// Check the build against itself first. When the build does not repeat itself, comparing the
-// committed bytes to one of its runs says nothing.
+// Check the build against itself first. When the build does not repeat itself, comparing the files
+// that were on disk to one of its runs says nothing.
 if (JSON.stringify([...first]) !== JSON.stringify([...second])) {
 	throw new Error("Council's second full build changed release bytes.");
 }
-if (JSON.stringify([...committed]) !== JSON.stringify([...first])) {
-	throw new Error("Council's committed release bytes are stale: a full build changed them. Commit the rebuilt files.");
+if (JSON.stringify([...onDisk]) !== JSON.stringify([...first])) {
+	throw new Error("Council's release files on disk are stale: a full build changed them. Keep the rebuilt files.");
 }
-console.log(`Council full build is byte-stable across ${second.size} release files, and the committed bytes match it.`);
+console.log(
+	`Council full build is byte-stable across ${second.size} release files, and the files that were on disk match it.`,
+);

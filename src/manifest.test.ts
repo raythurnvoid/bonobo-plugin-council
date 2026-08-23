@@ -50,7 +50,7 @@ describe("bonobo.plugin.json", () => {
 
 	test("declares the exact capability set the Council exchange requires", () => {
 		// plugin.service.connect requires plugin.data.read or workspace.files.write, and
-		// ui.outbound.fetch requires page outbound origins — both directions are publish rejections.
+		// ui.outbound.fetch requires UI outbound origins — both directions are publish rejections.
 		expect([...manifest.capabilities].sort()).toEqual([
 			"plugin.data.read",
 			"plugin.data.write",

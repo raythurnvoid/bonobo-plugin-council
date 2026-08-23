@@ -6552,31 +6552,35 @@ var ARTIFACT_KINDS = /* @__PURE__ */ new Set([
 	"summary_markdown",
 	"provider_transcript",
 ]);
-function parse_artifact(value) {
-	const record = as_record(value);
-	if (!record || typeof record.kind !== "string" || !ARTIFACT_KINDS.has(record.kind)) return null;
-	const name = typeof record.name === "string" ? record.name : typeof record.path === "string" ? record.path : null;
-	if (name === null) return null;
-	return {
-		kind: record.kind,
-		name,
-	};
-}
+/**
+ * Read the artifact rows the dashboard renders, and skip a row it has no label for.
+ *
+ * The service can add a fifth artifact kind at any time, and an installed copy of this page keeps
+ * running against the new service. If one unknown kind refused the whole list, the meeting would
+ * stop parsing and the dashboard would go empty for EVERY meeting until every member upgrades. So
+ * an unknown kind loses only its own row. A row without a name is a different case: `artifacts_view`
+ * in the service always sends `name`, so a row without one is a broken response, not an older one.
+ */
 function parse_artifacts(value) {
 	if (!Array.isArray(value)) return null;
 	const artifacts = [];
 	for (const item of value) {
-		const artifact = parse_artifact(item);
-		if (!artifact) return null;
-		artifacts.push(artifact);
+		const record = as_record(item);
+		if (!record) return null;
+		if (typeof record.kind !== "string" || !ARTIFACT_KINDS.has(record.kind)) continue;
+		if (typeof record.name !== "string") return null;
+		artifacts.push({
+			kind: record.kind,
+			name: record.name,
+		});
 	}
 	return artifacts;
 }
-function parse_meeting(value, artifactsRequired = false) {
+function parse_meeting(value) {
 	const record = as_record(value);
 	if (!record || typeof record.id !== "string" || typeof record.title !== "string" || typeof record.status !== "string")
 		return null;
-	const artifacts = record.artifacts === void 0 && !artifactsRequired ? [] : parse_artifacts(record.artifacts);
+	const artifacts = parse_artifacts(record.artifacts);
 	if (artifacts === null) return null;
 	return {
 		id: record.id,
@@ -6625,7 +6629,7 @@ function create_council_api(client) {
 			if (!data || !Array.isArray(data.meetings)) throw unexpected_response("list");
 			const meetings = [];
 			for (const value of data.meetings) {
-				const meeting = parse_meeting(value, true);
+				const meeting = parse_meeting(value);
 				if (!meeting) throw unexpected_response("list");
 				meetings.push(meeting);
 			}
@@ -6640,17 +6644,6 @@ function create_council_api(client) {
 				meeting,
 				joinCode: data.joinCode,
 				guestUrl: data.guestUrl,
-			};
-		},
-		async get_meeting(meetingId) {
-			const data = as_record(await post("/api/meetings/get", { meetingId }));
-			const meeting = data ? parse_meeting(data.meeting) : null;
-			if (!data || !meeting) throw unexpected_response("get");
-			const artifacts = parse_artifacts(data.artifacts);
-			if (artifacts === null) throw unexpected_response("get");
-			return {
-				meeting,
-				artifacts,
 			};
 		},
 		async open_meeting(meetingId) {
@@ -6743,7 +6736,7 @@ var STATUS_LABELS = {
 	created: "Created",
 	create_unknown: "Create incomplete",
 	open: "Open",
-	recording_start_unknown: "Recording unknown",
+	recording_start_unknown: "Recording failed",
 	closed: "Closed",
 	processing: "Processing",
 	ready: "Ready",
@@ -6752,6 +6745,16 @@ var STATUS_LABELS = {
 	deleting: "Deleting",
 	delete_failed: "Delete failed",
 };
+/**
+ * The statuses whose card belongs under Active. Everything else lands under Recent. The cut is what
+ * the member is still waiting on: a meeting they are driving themselves, or a service run that is
+ * happening right now.
+ *
+ * "Can still change on its own" is not the cut, and reading it that way puts the wrong statuses
+ * here. The service cron moves `failed`, `delete_failed` and `create_unknown` with no member
+ * action, but only on a slow clock: an hour for the two retries and a day for the expiry. A member
+ * reads those three cards as settled, so they belong under Recent.
+ */
 var ACTIVE_STATUSES = /* @__PURE__ */ new Set([
 	"created",
 	"open",
@@ -6760,7 +6763,13 @@ var ACTIVE_STATUSES = /* @__PURE__ */ new Set([
 	"processing",
 	"deleting",
 ]);
+/** The only two statuses the service lets a member close. Its transition map allows no others. */
 var CLOSEABLE_STATUSES = /* @__PURE__ */ new Set(["open", "recording_start_unknown"]);
+/**
+ * The two statuses the service still counts down. Its deadline cron closes a meeting in either one
+ * at `deadlineAt`, so both cards must show when that happens. Every other status ignores the field.
+ */
+var DEADLINE_STATUSES = /* @__PURE__ */ new Set(["open", "recording_start_unknown"]);
 var ARTIFACT_LABELS = {
 	track_audio: "Recording",
 	transcript_markdown: "Transcript",
@@ -6792,23 +6801,35 @@ function describe_meeting_changes(previous, next) {
 function format_time(epochMs) {
 	return new Date(epochMs).toLocaleString();
 }
+/**
+ * Name the kinds of file a meeting saved, one badge per kind.
+ *
+ * A meeting saves one audio track per speaker, so the raw list repeats `track_audio`. The member
+ * only needs to know that a recording exists, so the kinds collapse to a set and then follow the
+ * fixed order above instead of the order the pipeline happened to finalize them in.
+ */
 function artifact_labels(meeting) {
 	const kinds = new Set(meeting.artifacts.map((artifact) => artifact.kind));
 	return ARTIFACT_ORDER.filter((kind) => kinds.has(kind)).map((kind) => ARTIFACT_LABELS[kind]);
 }
-/** A value the member needs to carry from the sandboxed plugin page to another browser tab. */
+/**
+ * A value the member needs to carry from the sandboxed plugin page to another browser tab. The
+ * frame has no `allow-popups`, so the page cannot open the destination itself and copying is the
+ * only supported way out.
+ */
 function CopyRow(props) {
 	const rootId = `CopyRow-${useId()}`;
 	const inputId = `${rootId}-input`;
 	const statusId = `${rootId}-status`;
 	const inputRef = useRef(null);
 	const [copyState, setCopyState] = useState("idle");
+	const subjectSuffix = props.subject === void 0 ? "" : ` for ${props.subject}`;
 	const handle_copy = () => {
 		navigator.clipboard.writeText(props.value).then(
 			() => setCopyState("copied"),
 			() => {
 				inputRef.current?.select();
-				setCopyState("failed");
+				setCopyState(document.execCommand("copy") ? "copied" : "failed");
 			},
 		);
 	};
@@ -6830,13 +6851,14 @@ function CopyRow(props) {
 						type: "text",
 						readOnly: true,
 						value: props.value,
+						"aria-label": props.subject === void 0 ? void 0 : `${props.label}${subjectSuffix}`,
 						"aria-describedby": statusId,
 						onFocus: (event) => event.currentTarget.select(),
 					}),
 					/* @__PURE__ */ createVNode("button", {
 						type: "button",
 						className: "button button-quiet",
-						"aria-label": `Copy ${props.label.toLowerCase()}`,
+						"aria-label": `Copy ${props.label.toLowerCase()}${subjectSuffix}`,
 						onClick: handle_copy,
 						children: "Copy",
 					}),
@@ -6856,6 +6878,16 @@ function CopyRow(props) {
 		],
 	});
 }
+/**
+ * The same cap the service applies to a new title, counted the same way.
+ *
+ * `handle_create` in the service reads the title with a 200 UTF-8 byte limit. The field used to cap
+ * `maxLength` at 180 instead, and that attribute counts UTF-16 units. A 67-character Chinese or emoji
+ * title is already over 200 bytes while the browser still calls the field valid, so the create was
+ * sent and came back refused with "title is longer than 200 bytes" — a unit the member cannot see or
+ * count. Measure the bytes here instead, and refuse in the field where the member can fix it.
+ */
+var TITLE_MAX_BYTES = 200;
 function CreateMeetingForm(props) {
 	const rootId = `CreateMeetingForm-${useId()}`;
 	const titleId = `${rootId}-title-input`;
@@ -6871,7 +6903,13 @@ function CreateMeetingForm(props) {
 		if (actionError !== null) actionErrorRef.current?.focus();
 	}, [actionError]);
 	const validate_title = (input) => {
-		const message = input.value.trim() === "" ? "Enter a meeting title." : "";
+		const value = input.value.trim();
+		const message =
+			value === ""
+				? "Enter a meeting title."
+				: new TextEncoder().encode(value).length > TITLE_MAX_BYTES
+					? "This title is too long. Shorten it and try again."
+					: "";
 		input.setCustomValidity(message);
 		return message;
 	};
@@ -6918,8 +6956,8 @@ function CreateMeetingForm(props) {
 						type: "text",
 						value: title,
 						required: true,
-						maxLength: 180,
 						"aria-describedby": titleHelpId,
+						"aria-invalid": fieldError !== null,
 						onInput: (event) => {
 							setTitle(event.currentTarget.value);
 							setActionError(null);
@@ -6942,6 +6980,13 @@ function CreateMeetingForm(props) {
 						className: fieldError === null ? "field-help" : "field-help is-error",
 						children: fieldError ?? "Use a short name that guests will recognize.",
 					}),
+					fieldError !== null
+						? /* @__PURE__ */ createVNode("p", {
+								className: "visually-hidden",
+								role: "alert",
+								children: fieldError,
+							})
+						: null,
 				],
 			}),
 			actionError !== null
@@ -6957,7 +7002,7 @@ function CreateMeetingForm(props) {
 			/* @__PURE__ */ createVNode("button", {
 				type: "submit",
 				className: "button button-primary",
-				disabled: busy,
+				"aria-busy": busy,
 				children: busy ? "Creating…" : "Create meeting",
 			}),
 		],
@@ -6968,20 +7013,32 @@ function CreatedMeetingPanel(props) {
 	const headingId = `${`CreatedMeetingPanel-${useId()}`}-heading`;
 	const headingRef = useRef(null);
 	const errorRef = useRef(null);
+	const openedNoticeRef = useRef(null);
+	const openedHereRef = useRef(false);
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState(null);
+	const canOpen = props.status === "created";
+	const isOpen = props.status === "open";
 	useEffect(() => {
 		headingRef.current?.focus();
 	}, []);
 	useEffect(() => {
 		if (error !== null) errorRef.current?.focus();
 	}, [error]);
+	useEffect(() => {
+		if (isOpen && openedHereRef.current) {
+			openedHereRef.current = false;
+			openedNoticeRef.current?.focus();
+		}
+	}, [isOpen]);
 	const handle_open = () => {
+		if (busy) return;
 		setBusy(true);
 		setError(null);
 		props.api.open_meeting(props.created.meeting.id).then(
 			(meeting) => {
 				setBusy(false);
+				openedHereRef.current = true;
 				props.onOpened(meeting);
 			},
 			(openError) => {
@@ -7018,7 +7075,10 @@ function CreatedMeetingPanel(props) {
 			}),
 			/* @__PURE__ */ createVNode("p", {
 				className: "panel-hint",
-				children: "Share both values with guests. Open the meeting when you are ready to admit them.",
+				children: [
+					"Share both values with guests.",
+					canOpen ? " Open the meeting when you are ready to admit them." : "",
+				],
 			}),
 			error !== null
 				? /* @__PURE__ */ createVNode("p", {
@@ -7029,20 +7089,31 @@ function CreatedMeetingPanel(props) {
 						children: error,
 					})
 				: null,
+			isOpen
+				? /* @__PURE__ */ createVNode("p", {
+						ref: openedNoticeRef,
+						className: "panel-hint",
+						role: "status",
+						tabIndex: -1,
+						children: "The meeting is open. Guests can join it with the code above.",
+					})
+				: null,
 			/* @__PURE__ */ createVNode("div", {
 				className: "panel-actions",
 				children: [
-					/* @__PURE__ */ createVNode("button", {
-						type: "button",
-						className: "button button-primary",
-						disabled: busy,
-						onClick: handle_open,
-						children: busy ? "Opening…" : "Open meeting",
-					}),
+					canOpen
+						? /* @__PURE__ */ createVNode("button", {
+								type: "button",
+								className: "button button-primary",
+								"aria-label": `Open meeting ${props.created.meeting.title}`,
+								"aria-busy": busy,
+								onClick: handle_open,
+								children: busy ? "Opening…" : "Open meeting",
+							})
+						: null,
 					/* @__PURE__ */ createVNode("button", {
 						type: "button",
 						className: "button button-quiet",
-						disabled: busy,
 						onClick: props.onDismiss,
 						children: "Done, I saved the invite",
 					}),
@@ -7057,26 +7128,45 @@ function CreatedMeetingPanel(props) {
 	});
 }
 function MeetingRow(props) {
-	const { api, meeting } = props;
+	const { api, meeting, focusTitleMeetingId, onTitleFocused, onChanged, onDeleted } = props;
 	const rootId = `MeetingRow-${useId()}`;
 	const headingId = `${rootId}-heading`;
 	const confirmDescriptionId = `${rootId}-delete-description`;
+	const titleRef = useRef(null);
 	const errorRef = useRef(null);
 	const deleteButtonRef = useRef(null);
-	const confirmDeleteButtonRef = useRef(null);
+	const confirmDescriptionRef = useRef(null);
+	const roomLinkNoticeRef = useRef(null);
+	const roomLinkPressedRef = useRef(false);
 	const [busy, setBusy] = useState(null);
 	const [error, setError] = useState(null);
 	const [confirmingDelete, setConfirmingDelete] = useState(false);
 	const [roomUrl, setRoomUrl] = useState(null);
 	useEffect(() => {
-		if (confirmingDelete) confirmDeleteButtonRef.current?.focus();
+		if (confirmingDelete) confirmDescriptionRef.current?.focus();
 	}, [confirmingDelete]);
 	useEffect(() => {
 		if (error !== null) errorRef.current?.focus();
 	}, [error]);
 	useEffect(() => {
+		if (roomUrl === null || !roomLinkPressedRef.current) return;
+		roomLinkPressedRef.current = false;
+		if (!confirmingDelete) roomLinkNoticeRef.current?.focus();
+	}, [roomUrl, confirmingDelete]);
+	useEffect(() => {
 		if (meeting.status !== "open") setRoomUrl(null);
 	}, [meeting.status]);
+	useEffect(() => {
+		if (focusTitleMeetingId !== meeting.id) return;
+		onTitleFocused();
+		titleRef.current?.focus();
+	}, [focusTitleMeetingId, meeting.id, onTitleFocused]);
+	/**
+	 * Run one row action at a time. The row's buttons stay enabled and report the wait with
+	 * `aria-busy`, because the browser blurs a focused control the moment it becomes disabled and
+	 * nothing puts that focus back. So this guard, not a disabled button, is what stops a second
+	 * press from starting the same action twice.
+	 */
 	const run = (action, work) => {
 		if (busy !== null) return;
 		setBusy(action);
@@ -7089,24 +7179,20 @@ function MeetingRow(props) {
 			},
 		);
 	};
-	const handle_delete = () => {
-		if (busy !== null) return;
-		setBusy("delete");
-		setError(null);
-		api.delete_meeting(meeting.id).then(
-			(status) => {
-				setBusy(null);
-				setConfirmingDelete(false);
-				props.onDeleted({
+	const handle_delete = (event) => {
+		const card = event.currentTarget.closest("li");
+		run("delete", async () => {
+			const status = await api.delete_meeting(meeting.id);
+			const focusHeading = card !== null && card.contains(document.activeElement);
+			setConfirmingDelete(false);
+			onDeleted(
+				{
 					...meeting,
 					status,
-				});
-			},
-			(actionError) => {
-				setBusy(null);
-				setError(get_error_message(actionError));
-			},
-		);
+				},
+				focusHeading,
+			);
+		});
 	};
 	const labels = artifact_labels(meeting);
 	return /* @__PURE__ */ createVNode("li", {
@@ -7120,6 +7206,7 @@ function MeetingRow(props) {
 					/* @__PURE__ */ createVNode("div", {
 						children: [
 							/* @__PURE__ */ createVNode("h4", {
+								ref: titleRef,
 								id: headingId,
 								className: "meeting-title",
 								tabIndex: -1,
@@ -7158,7 +7245,7 @@ function MeetingRow(props) {
 								],
 							})
 						: null,
-					meeting.status === "open" && meeting.deadlineAt !== null
+					DEADLINE_STATUSES.has(meeting.status) && meeting.deadlineAt !== null
 						? /* @__PURE__ */ createVNode("div", {
 								children: [
 									/* @__PURE__ */ createVNode("dt", { children: "Open until" }),
@@ -7174,7 +7261,7 @@ function MeetingRow(props) {
 								],
 							})
 						: null,
-					meeting.destinationPath !== null
+					meeting.destinationPath !== null && meeting.artifacts.length > 0
 						? /* @__PURE__ */ createVNode("div", {
 								className: "meeting-destination",
 								children: [
@@ -7197,7 +7284,12 @@ function MeetingRow(props) {
 							role: "status",
 							children: "Council is preparing the saved files.",
 						})
-					: null,
+					: meeting.status === "ready"
+						? /* @__PURE__ */ createVNode("p", {
+								className: "meeting-progress",
+								children: "Council saved no files for this meeting.",
+							})
+						: null,
 			meeting.status === "failed" || meeting.status === "delete_failed"
 				? meeting.failureReason
 					? /* @__PURE__ */ createVNode("p", {
@@ -7207,6 +7299,38 @@ function MeetingRow(props) {
 						})
 					: null
 				: null,
+			meeting.status === "create_unknown"
+				? /* @__PURE__ */ createVNode("p", {
+						className: "meeting-failure",
+						role: "status",
+						children:
+							"Council did not get an answer when it created the room, so this meeting cannot be opened. Delete it and create a new meeting.",
+					})
+				: meeting.status === "recording_start_unknown"
+					? /* @__PURE__ */ createVNode("p", {
+							className: "meeting-failure",
+							role: "status",
+							children:
+								"Council could not start the recording, so this meeting saves no files. The room stays up for the people already in it, and nobody else can join.",
+						})
+					: null,
+			meeting.status === "created" || meeting.status === "open"
+				? /* @__PURE__ */ createVNode("div", {
+						className: "meeting-guest",
+						children: [
+							/* @__PURE__ */ createVNode(CopyRow, {
+								label: "Guest link",
+								value: `${COUNCIL_SERVICE_ORIGIN}/room?m=${meeting.id}`,
+								subject: meeting.title,
+							}),
+							/* @__PURE__ */ createVNode("p", {
+								className: "panel-hint",
+								children:
+									"Guests also need the join code. Council showed it once when this meeting was created and cannot show it again. Create a new meeting to get a new code.",
+							}),
+						],
+					})
+				: null,
 			/* @__PURE__ */ createVNode("div", {
 				className: "meeting-actions",
 				children: [
@@ -7214,11 +7338,14 @@ function MeetingRow(props) {
 						? /* @__PURE__ */ createVNode("button", {
 								type: "button",
 								className: "button button-primary",
-								disabled: busy !== null,
-								onClick: () =>
+								"aria-label": `Open meeting ${meeting.title}`,
+								"aria-busy": busy === "open",
+								onClick: (event) => {
+									const pressed = event.currentTarget;
 									run("open", async () => {
-										props.onChanged(await api.open_meeting(meeting.id));
-									}),
+										onChanged(await api.open_meeting(meeting.id), document.activeElement === pressed);
+									});
+								},
 								children: busy === "open" ? "Opening…" : "Open meeting",
 							})
 						: null,
@@ -7226,10 +7353,13 @@ function MeetingRow(props) {
 						? /* @__PURE__ */ createVNode("button", {
 								type: "button",
 								className: "button button-primary",
-								disabled: busy !== null,
+								"aria-label": `Get host room link ${meeting.title}`,
+								"aria-busy": busy === "room-link",
 								onClick: () =>
 									run("room-link", async () => {
-										setRoomUrl(await api.room_ticket(meeting.id));
+										const url = await api.room_ticket(meeting.id);
+										roomLinkPressedRef.current = true;
+										setRoomUrl(url);
 									}),
 								children: busy === "room-link" ? "Getting link…" : "Get host room link",
 							})
@@ -7238,16 +7368,22 @@ function MeetingRow(props) {
 						? /* @__PURE__ */ createVNode("button", {
 								type: "button",
 								className: "button button-quiet",
-								disabled: busy !== null,
-								onClick: () =>
+								"aria-label": `Close meeting ${meeting.title}`,
+								"aria-busy": busy === "close",
+								onClick: (event) => {
+									const pressed = event.currentTarget;
 									run("close", async () => {
 										const status = await api.close_meeting(meeting.id);
 										setRoomUrl(null);
-										props.onChanged({
-											...meeting,
-											status,
-										});
-									}),
+										onChanged(
+											{
+												...meeting,
+												status,
+											},
+											document.activeElement === pressed,
+										);
+									});
+								},
 								children: busy === "close" ? "Closing…" : "Close meeting",
 							})
 						: null,
@@ -7255,6 +7391,7 @@ function MeetingRow(props) {
 						? /* @__PURE__ */ createVNode("button", {
 								type: "button",
 								className: "button button-quiet",
+								"aria-label": `Delete after processing ${meeting.title}`,
 								disabled: true,
 								children: "Delete after processing",
 							})
@@ -7263,7 +7400,7 @@ function MeetingRow(props) {
 									ref: deleteButtonRef,
 									type: "button",
 									className: "button button-danger",
-									disabled: busy !== null,
+									"aria-label": `Delete ${meeting.title}`,
 									onClick: () => setConfirmingDelete(true),
 									children: "Delete",
 								})
@@ -7275,26 +7412,29 @@ function MeetingRow(props) {
 						className: "meeting-confirm",
 						children: [
 							/* @__PURE__ */ createVNode("p", {
+								ref: confirmDescriptionRef,
 								id: confirmDescriptionId,
-								children:
-									"Delete this meeting? Its saved folder moves to the Files archive, where a member can restore it.",
+								tabIndex: -1,
+								children: [
+									"Delete ",
+									meeting.title,
+									"? Any files Council saved for it move to the Files archive, where a member can restore them.",
+								],
 							}),
 							/* @__PURE__ */ createVNode("div", {
 								className: "panel-actions",
 								children: [
 									/* @__PURE__ */ createVNode("button", {
-										ref: confirmDeleteButtonRef,
 										type: "button",
 										className: "button button-danger",
 										"aria-describedby": confirmDescriptionId,
-										disabled: busy !== null,
+										"aria-busy": busy === "delete",
 										onClick: handle_delete,
 										children: busy === "delete" ? "Deleting…" : "Confirm delete",
 									}),
 									/* @__PURE__ */ createVNode("button", {
 										type: "button",
 										className: "button button-quiet",
-										disabled: busy !== null,
 										onClick: () => {
 											setConfirmingDelete(false);
 											deleteButtonRef.current?.focus();
@@ -7310,13 +7450,17 @@ function MeetingRow(props) {
 				? /* @__PURE__ */ createVNode("div", {
 						className: "meeting-room-link",
 						children: [
+							/* @__PURE__ */ createVNode("p", {
+								ref: roomLinkNoticeRef,
+								className: "panel-hint",
+								role: "status",
+								tabIndex: -1,
+								children: "Copy this single-use link and open it in a new browser tab.",
+							}),
 							/* @__PURE__ */ createVNode(CopyRow, {
 								label: "Host room link",
 								value: roomUrl,
-							}),
-							/* @__PURE__ */ createVNode("p", {
-								className: "panel-hint",
-								children: "Copy this single-use link and open it in a new browser tab.",
+								subject: meeting.title,
 							}),
 						],
 					})
@@ -7352,6 +7496,8 @@ function MeetingGroup(props) {
 						{
 							api: props.api,
 							meeting,
+							focusTitleMeetingId: props.focusTitleMeetingId,
+							onTitleFocused: props.onTitleFocused,
 							onChanged: props.onChanged,
 							onDeleted: props.onDeleted,
 						},
@@ -7369,6 +7515,7 @@ function App(props) {
 	const [meetings, setMeetings] = useState(null);
 	const [listError, setListError] = useState(null);
 	const [isRefreshing, setIsRefreshing] = useState(false);
+	const [isMemberRefreshing, setIsMemberRefreshing] = useState(false);
 	const [created, setCreated] = useState(null);
 	const [announcement, setAnnouncement] = useState({
 		sequence: 0,
@@ -7379,45 +7526,52 @@ function App(props) {
 	const meetingsHeadingRef = useRef(null);
 	const newMeetingHeadingRef = useRef(null);
 	const announcedMeetingsRef = useRef(null);
-	const [focusAfterCreatedPanel, setFocusAfterCreatedPanel] = useState(null);
-	const refresh = useCallback(() => {
-		if (refreshingRef.current) {
-			refreshQueuedRef.current = true;
-			return;
-		}
-		refreshingRef.current = true;
-		setIsRefreshing(true);
-		api
-			.list_meetings()
-			.then(
-				(items) => {
-					const announced = announcedMeetingsRef.current;
-					announcedMeetingsRef.current = items;
-					if (announced !== null) {
-						const text = describe_meeting_changes(announced, items);
-						if (text !== "")
-							setAnnouncement((current) => ({
-								sequence: current.sequence + 1,
-								text,
-							}));
+	const [focusNewMeetingAfterPanel, setFocusNewMeetingAfterPanel] = useState(false);
+	const [focusMeetingsAfterRetry, setFocusMeetingsAfterRetry] = useState(false);
+	const [focusTitleMeetingId, setFocusTitleMeetingId] = useState(null);
+	const refresh = useCallback(
+		(trigger = "background") => {
+			if (trigger === "member") setIsMemberRefreshing(true);
+			if (refreshingRef.current) {
+				refreshQueuedRef.current = true;
+				return;
+			}
+			refreshingRef.current = true;
+			setIsRefreshing(true);
+			api
+				.list_meetings()
+				.then(
+					(items) => {
+						const announced = announcedMeetingsRef.current;
+						announcedMeetingsRef.current = items;
+						if (announced !== null) {
+							const text = describe_meeting_changes(announced, items);
+							if (text !== "")
+								setAnnouncement((current) => ({
+									sequence: current.sequence + 1,
+									text,
+								}));
+						}
+						setMeetings(items);
+						setListError(null);
+					},
+					(error) => {
+						setListError(get_error_message(error));
+					},
+				)
+				.finally(() => {
+					refreshingRef.current = false;
+					if (refreshQueuedRef.current) {
+						refreshQueuedRef.current = false;
+						refresh();
+						return;
 					}
-					setMeetings(items);
-					setListError(null);
-				},
-				(error) => {
-					setListError(get_error_message(error));
-				},
-			)
-			.finally(() => {
-				refreshingRef.current = false;
-				if (refreshQueuedRef.current) {
-					refreshQueuedRef.current = false;
-					refresh();
-					return;
-				}
-				setIsRefreshing(false);
-			});
-	}, [api]);
+					setIsRefreshing(false);
+					setIsMemberRefreshing(false);
+				});
+		},
+		[api],
+	);
 	useEffect(() => {
 		refresh();
 	}, [refresh]);
@@ -7426,11 +7580,15 @@ function App(props) {
 		return () => clearInterval(timer);
 	}, [refresh]);
 	useEffect(() => {
-		if (created !== null || focusAfterCreatedPanel === null) return;
-		if (focusAfterCreatedPanel === "create") newMeetingHeadingRef.current?.focus();
-		else document.querySelector(`[data-meeting-id="${focusAfterCreatedPanel}"] .meeting-title`)?.focus();
-		setFocusAfterCreatedPanel(null);
-	}, [created, focusAfterCreatedPanel]);
+		if (created !== null || !focusNewMeetingAfterPanel) return;
+		newMeetingHeadingRef.current?.focus();
+		setFocusNewMeetingAfterPanel(false);
+	}, [created, focusNewMeetingAfterPanel]);
+	useEffect(() => {
+		if (isRefreshing || !focusMeetingsAfterRetry) return;
+		if (listError === null) meetingsHeadingRef.current?.focus();
+		setFocusMeetingsAfterRetry(false);
+	}, [isRefreshing, listError, focusMeetingsAfterRetry]);
 	const activeMeetings = meetings?.filter((meeting) => ACTIVE_STATUSES.has(meeting.status)) ?? [];
 	const recentMeetings = meetings?.filter((meeting) => !ACTIVE_STATUSES.has(meeting.status)) ?? [];
 	const merge_meeting = (next) => {
@@ -7441,13 +7599,19 @@ function App(props) {
 				: [next, ...current];
 		});
 	};
-	const handle_changed = (meeting) => {
+	const handle_changed = (meeting, focusTitle) => {
 		merge_meeting(meeting);
+		if (focusTitle) setFocusTitleMeetingId(meeting.id);
 		refresh();
 	};
-	const handle_deleted = (meeting) => {
+	const handle_title_focused = useCallback(() => setFocusTitleMeetingId(null), []);
+	const handle_retry = () => {
+		setFocusMeetingsAfterRetry(true);
+		refresh("member");
+	};
+	const handle_deleted = (meeting, focusHeading) => {
 		merge_meeting(meeting);
-		meetingsHeadingRef.current?.focus();
+		if (focusHeading) meetingsHeadingRef.current?.focus();
 		refresh();
 	};
 	return /* @__PURE__ */ createVNode("div", {
@@ -7456,23 +7620,14 @@ function App(props) {
 			/* @__PURE__ */ createVNode("header", {
 				className: "council-header",
 				children: [
-					/* @__PURE__ */ createVNode("div", {
-						children: [
-							/* @__PURE__ */ createVNode("p", {
-								className: "section-kicker",
-								children: "Workspace meeting room",
-							}),
-							/* @__PURE__ */ createVNode("h1", { children: "Council" }),
-							/* @__PURE__ */ createVNode("p", {
-								className: "council-tagline",
-								children: "Create a call, invite guests, and keep the recording and notes with your files.",
-							}),
-						],
+					/* @__PURE__ */ createVNode("p", {
+						className: "section-kicker",
+						children: "Workspace meeting room",
 					}),
-					/* @__PURE__ */ createVNode("a", {
-						className: "button button-primary council-new-meeting",
-						href: `#${newMeetingId}`,
-						children: "New meeting",
+					/* @__PURE__ */ createVNode("h1", { children: "Council" }),
+					/* @__PURE__ */ createVNode("p", {
+						className: "council-tagline",
+						children: "Create a call, invite guests, and keep the recording and notes with your files.",
 					}),
 				],
 			}),
@@ -7480,21 +7635,19 @@ function App(props) {
 				className: "council-layout",
 				children: [
 					/* @__PURE__ */ createVNode("aside", {
-						id: newMeetingId,
 						className: "council-compose",
 						children: [
 							created !== null
 								? /* @__PURE__ */ createVNode(CreatedMeetingPanel, {
 										api,
 										created,
+										status: meetings?.find((meeting) => meeting.id === created.meeting.id)?.status ?? null,
 										onDismiss: () => {
-											setFocusAfterCreatedPanel("create");
+											setFocusNewMeetingAfterPanel(true);
 											setCreated(null);
 										},
 										onOpened: (meeting) => {
 											merge_meeting(meeting);
-											setFocusAfterCreatedPanel(meeting.id);
-											setCreated(null);
 											refresh();
 										},
 									})
@@ -7515,7 +7668,7 @@ function App(props) {
 											/* @__PURE__ */ createVNode("p", {
 												className: "create-copy",
 												children:
-													"When recording is started, Council saves its tracks, transcript, summary, and provider transcript in a read-only meeting folder.",
+													"When recording is started, Council saves its tracks, transcript, summary, and provider transcript as read-only files in the meeting folder.",
 											}),
 											/* @__PURE__ */ createVNode(CreateMeetingForm, {
 												api,
@@ -7532,7 +7685,8 @@ function App(props) {
 								children: [
 									/* @__PURE__ */ createVNode("strong", { children: "Find finished files in Files" }),
 									/* @__PURE__ */ createVNode("span", {
-										children: "Council cannot open host pages from this secure plugin frame.",
+										children:
+											"Council saves the files for each meeting under /meetings in Files. Open Files in another tab to reach them.",
 									}),
 								],
 							}),
@@ -7559,7 +7713,7 @@ function App(props) {
 											}),
 										],
 									}),
-									isRefreshing && meetings !== null
+									isMemberRefreshing && meetings !== null
 										? /* @__PURE__ */ createVNode("span", {
 												className: "refreshing-label",
 												role: "status",
@@ -7577,9 +7731,9 @@ function App(props) {
 											/* @__PURE__ */ createVNode("button", {
 												type: "button",
 												className: "button button-quiet",
-												disabled: isRefreshing,
-												onClick: refresh,
-												children: "Retry",
+												"aria-busy": isMemberRefreshing,
+												onClick: handle_retry,
+												children: isMemberRefreshing ? "Retrying…" : "Retry",
 											}),
 										],
 									})
@@ -7594,9 +7748,9 @@ function App(props) {
 												/* @__PURE__ */ createVNode("button", {
 													type: "button",
 													className: "button button-quiet",
-													disabled: isRefreshing,
-													onClick: refresh,
-													children: "Retry",
+													"aria-busy": isMemberRefreshing,
+													onClick: handle_retry,
+													children: isMemberRefreshing ? "Retrying…" : "Retry",
 												}),
 											],
 										})
@@ -7618,6 +7772,8 @@ function App(props) {
 													title: "Active",
 													meetings: activeMeetings,
 													api,
+													focusTitleMeetingId,
+													onTitleFocused: handle_title_focused,
 													onChanged: handle_changed,
 													onDeleted: handle_deleted,
 												}),
@@ -7625,6 +7781,8 @@ function App(props) {
 													title: "Recent",
 													meetings: recentMeetings,
 													api,
+													focusTitleMeetingId,
+													onTitleFocused: handle_title_focused,
 													onChanged: handle_changed,
 													onDeleted: handle_deleted,
 												}),

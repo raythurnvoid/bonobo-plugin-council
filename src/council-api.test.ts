@@ -78,7 +78,7 @@ describe("create_council_api", () => {
 			"fetch",
 			vi.fn(async () =>
 				json_response(200, {
-					meeting: { id: "m1", title: "Standup", status: "created" },
+					meeting: { id: "m1", title: "Standup", status: "created", artifacts: [] },
 					joinCode: "one-time-code",
 					guestUrl: "https://council.example.com/room?m=m1",
 				}),
@@ -173,7 +173,7 @@ describe("create_council_api", () => {
 			"fetch",
 			vi.fn(async (url: string) => {
 				if (url.endsWith("/open")) {
-					return json_response(200, { meeting: { id: "m1", title: "Standup", status: "open" } });
+					return json_response(200, { meeting: { id: "m1", title: "Standup", status: "open", artifacts: [] } });
 				}
 				return json_response(200, { status: url.endsWith("/close") ? "processing" : "deleting" });
 			}),
@@ -197,30 +197,29 @@ describe("create_council_api", () => {
 		await expect(api.delete_meeting("m1")).rejects.toThrow("Unexpected response from the Council service");
 	});
 
-	test("get keeps known artifact summaries", async () => {
+	test("open refuses the bare status body that close and delete answer with", async () => {
 		vi.stubGlobal(
 			"fetch",
-			vi.fn(async () =>
-				json_response(200, {
-					meeting: { id: "m1", title: "Standup", status: "ready" },
-					artifacts: [
-						{ kind: "track_audio", name: "standup.webm", fileNodeId: "node1" },
-						{ kind: "transcript_markdown", path: "/Meetings/standup.md" },
-					],
-				}),
-			),
+			vi.fn(async () => json_response(200, { status: "open" })),
 		);
-		const api = create_council_api(make_client(["plu_first"]));
 
-		const details = await api.get_meeting("m1");
-		expect(details.meeting.failureReason).toBeNull();
-		expect(details.artifacts).toEqual([
-			{ kind: "track_audio", name: "standup.webm" },
-			{ kind: "transcript_markdown", name: "/Meetings/standup.md" },
-		]);
+		// Open is the only mutation that answers a whole meeting. A caller or a test double that
+		// copies close's `{status}` body must fail here instead of leaving the page with no meeting.
+		await expect(create_council_api(make_client(["plu_first"])).open_meeting("m1")).rejects.toThrow(
+			"Unexpected response from the Council service (open)",
+		);
+
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => json_response(200, { meeting: { id: "m1", title: "Standup", status: "open", artifacts: [] } })),
+		);
+		await expect(create_council_api(make_client(["plu_first"])).open_meeting("m1")).resolves.toMatchObject({
+			id: "m1",
+			status: "open",
+		});
 	});
 
-	test("list refuses an unknown artifact kind", async () => {
+	test("an unknown artifact kind drops its own row and keeps the meeting", async () => {
 		vi.stubGlobal(
 			"fetch",
 			vi.fn(async () =>
@@ -230,7 +229,11 @@ describe("create_council_api", () => {
 							id: "m1",
 							title: "Standup",
 							status: "ready",
-							artifacts: [{ kind: "raw_node", name: "node-id" }],
+							artifacts: [
+								{ kind: "track_audio", name: "standup.webm", fileNodeId: "node1" },
+								{ kind: "chapter_markers", name: "chapters.json" },
+								{ kind: "transcript_markdown", name: "standup.md" },
+							],
 						},
 					],
 				}),
@@ -238,27 +241,84 @@ describe("create_council_api", () => {
 		);
 		const api = create_council_api(make_client(["plu_first"]));
 
-		await expect(api.list_meetings()).rejects.toThrow("Unexpected response from the Council service");
+		// A fifth artifact kind added service-side must cost that one badge, not the whole dashboard.
+		await expect(api.list_meetings()).resolves.toMatchObject([
+			{
+				title: "Standup",
+				artifacts: [
+					{ kind: "track_audio", name: "standup.webm" },
+					{ kind: "transcript_markdown", name: "standup.md" },
+				],
+			},
+		]);
 	});
 
-	test("get keeps a string failureReason on a failed meeting", async () => {
+	test("an artifact row with no name is still refused", async () => {
 		vi.stubGlobal(
 			"fetch",
 			vi.fn(async () =>
 				json_response(200, {
-					meeting: {
-						id: "m1",
-						title: "Standup",
-						status: "failed",
-						failureReason: "Provider session ended without a recording",
-					},
-					artifacts: [],
+					meetings: [
+						{
+							id: "m1",
+							title: "Standup",
+							status: "ready",
+							artifacts: [{ kind: "summary_markdown", fileNodeId: "node1" }],
+						},
+					],
+				}),
+			),
+		);
+
+		// `artifacts_view` in the service always sends `name`, so a row without one is a broken
+		// response, not a newer one.
+		await expect(create_council_api(make_client(["plu_first"])).list_meetings()).rejects.toThrow(
+			"Unexpected response from the Council service",
+		);
+
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () =>
+				json_response(200, {
+					meetings: [
+						{
+							id: "m1",
+							title: "Standup",
+							status: "ready",
+							artifacts: [{ kind: "transcript_markdown", path: "/Meetings/standup.md" }],
+						},
+					],
+				}),
+			),
+		);
+
+		// `path` is not a field the service has ever sent. Reading it as a name would let a broken
+		// response through and show the member a file name nobody wrote.
+		await expect(create_council_api(make_client(["plu_first"])).list_meetings()).rejects.toThrow(
+			"Unexpected response from the Council service",
+		);
+	});
+
+	test("list keeps a string failureReason on a failed meeting", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () =>
+				json_response(200, {
+					meetings: [
+						{
+							id: "m1",
+							title: "Standup",
+							status: "failed",
+							failureReason: "Provider session ended without a recording",
+							artifacts: [],
+						},
+					],
 				}),
 			),
 		);
 		const api = create_council_api(make_client(["plu_first"]));
 
-		const details = await api.get_meeting("m1");
-		expect(details.meeting.failureReason).toBe("Provider session ended without a recording");
+		const [listed] = await api.list_meetings();
+		expect(listed?.failureReason).toBe("Provider session ended without a recording");
 	});
 });

@@ -52,24 +52,25 @@ vp env exec pnpm --ignore-workspace run build:verify
 
 Commit `dist/`. The publisher reads these exact bytes from the Council repository.
 
-For local visual checks, run the Vite development command and open `preview.html?state=all`. The preview uses fixed data and never calls a deployed service. Supported focused states are `created`, `open`, `processing`, `ready`, `failed`, `loading`, `empty`, `error`, and `stale`. The stale state shows cards first, then keeps them under a refresh error after the next poll. Create a meeting in any normal state to inspect the one-time invite and its real `created → open` interaction.
+For local visual checks, run the Vite development command and open `preview.html?state=all`. The preview uses fixed data and never calls a deployed service. Supported focused states are `open`, `recording_start_unknown`, `processing`, `ready`, `failed`, `delete_failed`, `loading`, `empty`, `error`, and `stale`. A focused state other than `loading`, `empty`, `error`, and `stale` is matched against a meeting **status**, so it works only when a fixture carries that status. `created` is not one of them, despite what this line used to say: `?state=created` renders a card titled `Preview has no fixture for ?state=created`. Use the create form for a real `created` card, as the next sentence describes. The stale state shows cards first, then keeps them under a refresh error after the next poll. Create a meeting in any normal state to inspect the one-time invite and its real `created → open` interaction.
 
 ## Release checklist
 
 Do not deploy or publish as part of a normal source change. A release needs separate approval.
 
 1. Turn on the meeting maintenance bridge. Audit and drain every old artifact row and matching host target.
-2. Apply Council D1 migrations `0006` and `0007`.
+2. Apply Council D1 migrations `0006`, `0007`, and `0008`. `0008` drops the two `meeting_tracks` columns nothing ever wrote, `participant_id` and `start_offset_ms`.
 3. Deploy the strict core upload contract and the new read-only capability.
 4. Deploy the final Council Worker.
-5. Mirror SDK `0.9.2`, verify the remote SHA, and let external plugin authors use the new capability type.
+5. Confirm the SDK commit pinned in `package.json` resolves to `0.9.2` in `pnpm-lock.yaml`. The mirror is already pushed.
 6. Update Council source and set the same unused version in `bonobo.plugin.json` and `package.json`.
 7. Run the focused tests and typecheck.
-8. Run `build:verify`. It fingerprints the committed release files, then runs the full build twice. It fails when the second build changes a release byte, and when the committed files no longer match a fresh build.
+8. Run `build:verify`. It fingerprints the release files on disk, then runs the full build twice. It fails when the second build changes a release byte, and when the files that were on disk no longer match a fresh build. It never reads git, so it cannot tell you whether those files are also committed.
 9. Commit and push the Council submodule repository, then verify the remote default-branch `HEAD` is the exact local commit SHA.
-10. Update the root repository's Council gitlink to that SHA.
-11. Publish immediately from that exact commit and verify the stored `sourceCommitSha`.
-12. Accept the new capability on the installation and run the create, join, close, and artifact smoke test.
-13. Reopen meeting creation.
+10. Run `git status --porcelain` and confirm it prints nothing at all. Checking only `bonobo.plugin.json`, `package.json`, and `dist/` is not enough: an untracked file under `src/` passes that check, and step 7 then passes here only because the file is on your disk. From a fresh clone of the published commit, the same tests and typecheck cannot resolve it. The publisher reads these files from GitHub at the pinned commit, so a commit that carries new `src/` without the rebuilt `dist/` publishes a `dist` that its own source did not produce. The manifest `sha256` entries still match that stale `dist`, so nothing later in the pipeline notices, and the review verdict then describes an artifact its source never built.
+11. Update the root repository's Council gitlink to that SHA.
+12. Publish immediately from that exact commit and verify the stored `sourceCommitSha`.
+13. Accept the new capability on the installation and run the create, join, close, and artifact smoke test.
+14. Reopen meeting creation.
 
-After an approved `0.2.0` publish, the installation must review and accept the new read-only-file capability before Council can create artifacts.
+After an approved `0.2.0` publish, the installation must review and accept the new read-only-file capability. Until it does, the service-grant exchange refuses every page call with 403, and the dashboard cannot get a grant at all, because the exchange is the only thing that creates one. So the member cannot list, create, open, close, or delete a meeting. The whole page is dead, not only the artifact writing.

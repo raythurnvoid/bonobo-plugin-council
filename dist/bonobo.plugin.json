@@ -34,14 +34,14 @@
 	"files": [
 		{
 			"path": "dist/frontend/assets/index.css",
-			"sha256": "sha256:60d3022aa6df7a31767f4d28563e8bacc438644596f6fd91d0675b93f336ae70",
-			"bytes": 9599,
+			"sha256": "sha256:0721d7d8d6fd820cef3ad0f77c77b4befae47c50918557841a53ee47206aacb7",
+			"bytes": 16230,
 			"contentType": "text/css"
 		},
 		{
 			"path": "dist/frontend/assets/index.js",
-			"sha256": "sha256:a2290ccd8600bb0508011d503c539e0b9a12bb070ee8c414f1ca366699cbb626",
-			"bytes": 264073,
+			"sha256": "sha256:231e2012fa87f9aa90f21b345d7a47a4cf478c83ecda8682b9ee521e8c9debb4",
+			"bytes": 271504,
 			"contentType": "application/javascript"
 		},
 		{
