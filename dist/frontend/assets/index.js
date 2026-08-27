@@ -6594,6 +6594,7 @@ function parse_meeting(value) {
 		maxParticipants: as_optional_number(record.maxParticipants),
 		destinationPath: typeof record.destinationPath === "string" ? record.destinationPath : null,
 		failureReason: typeof record.failureReason === "string" ? record.failureReason : null,
+		recordingWarning: typeof record.recordingWarning === "string" ? record.recordingWarning : null,
 		artifacts,
 	};
 }
@@ -7272,6 +7273,13 @@ function MeetingRow(props) {
 						: null,
 				],
 			}),
+			meeting.recordingWarning
+				? /* @__PURE__ */ createVNode("p", {
+						className: "meeting-failure",
+						role: "status",
+						children: meeting.recordingWarning,
+					})
+				: null,
 			labels.length > 0
 				? /* @__PURE__ */ createVNode("ul", {
 						className: "artifact-badges",
