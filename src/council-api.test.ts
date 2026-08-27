@@ -335,7 +335,7 @@ describe("create_council_api", () => {
 							title: "Standup",
 							status: "ready",
 							recordingWarning:
-								"Council could not store the video recording. The file was larger than the workspace can accept. Audio, transcript, and summary were still saved.",
+								"Council could not store the video recording. The file was larger than the workspace can accept. The audio file was still saved.",
 							artifacts: [{ kind: "track_audio", name: "recording-audio.m4a" }],
 						},
 					],
@@ -346,7 +346,7 @@ describe("create_council_api", () => {
 
 		const [listed] = await api.list_meetings();
 		expect(listed?.recordingWarning).toBe(
-			"Council could not store the video recording. The file was larger than the workspace can accept. Audio, transcript, and summary were still saved.",
+			"Council could not store the video recording. The file was larger than the workspace can accept. The audio file was still saved.",
 		);
 	});
 });

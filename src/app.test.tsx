@@ -1563,7 +1563,7 @@ test("a ready meeting with a lost video shows the recording warning and keeps th
 					{
 						...meeting("m1", "Meeting m1", "ready"),
 						recordingWarning:
-							"Council could not store the video recording. The file was larger than the workspace can accept. Audio, transcript, and summary were still saved.",
+							"Council could not store the video recording. The file was larger than the workspace can accept. The audio file was still saved.",
 						artifacts: [
 							{ kind: "track_audio", name: "recording-audio.m4a" },
 							{ kind: "transcript_markdown", name: "transcript.md" },
@@ -1579,7 +1579,7 @@ test("a ready meeting with a lost video shows the recording warning and keeps th
 	expect(await screen.findByText("Ready")).toBeTruthy();
 	expect(
 		screen.getByText(
-			"Council could not store the video recording. The file was larger than the workspace can accept. Audio, transcript, and summary were still saved.",
+			"Council could not store the video recording. The file was larger than the workspace can accept. The audio file was still saved.",
 		),
 	).toBeTruthy();
 	expect(screen.getByText("Recording")).toBeTruthy();
