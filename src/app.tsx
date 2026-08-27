@@ -663,6 +663,12 @@ function MeetingRow(props: MeetingRow_Props) {
 			    that either. Council cannot tell "nobody pressed record" apart from "the provider answer to
 			    Start recording was lost", and in that second case a recording may really be running on the
 			    provider. The card must not tell the member that no recording was started. */}
+			{meeting.recordingWarning ? (
+				<p className="meeting-failure" role="status">
+					{meeting.recordingWarning}
+				</p>
+			) : null}
+
 			{labels.length > 0 ? (
 				<ul className="artifact-badges" aria-label="Saved artifacts">
 					{labels.map((label) => (

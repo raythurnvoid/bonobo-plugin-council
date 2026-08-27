@@ -50,6 +50,7 @@ export function meeting(
 		maxParticipants: 25,
 		destinationPath: `/meetings/${id}`,
 		failureReason: null,
+		recordingWarning: null,
 		artifacts: [],
 		...overrides,
 	};

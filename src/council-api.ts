@@ -32,6 +32,7 @@ export type CouncilMeeting = {
 	maxParticipants: number | null;
 	destinationPath: string | null;
 	failureReason: string | null;
+	recordingWarning: string | null;
 	artifacts: CouncilArtifact[];
 };
 
@@ -127,6 +128,7 @@ function parse_meeting(value: unknown): CouncilMeeting | null {
 		maxParticipants: as_optional_number(record.maxParticipants),
 		destinationPath: typeof record.destinationPath === "string" ? record.destinationPath : null,
 		failureReason: typeof record.failureReason === "string" ? record.failureReason : null,
+		recordingWarning: typeof record.recordingWarning === "string" ? record.recordingWarning : null,
 		artifacts,
 	};
 }

@@ -1555,6 +1555,38 @@ test("processing keeps delete disabled until the service allows it", async () =>
 	expect(screen.queryByRole("button", { name: "Delete Meeting m1" })).toBeNull();
 });
 
+test("a ready meeting with a lost video shows the recording warning and keeps the other badges", async () => {
+	stub_council({
+		"/api/meetings/list": () => ({
+			body: {
+				meetings: [
+					{
+						...meeting("m1", "Meeting m1", "ready"),
+						recordingWarning:
+							"Council could not store the video recording. The file was larger than the workspace can accept. Audio, transcript, and summary were still saved.",
+						artifacts: [
+							{ kind: "track_audio", name: "recording-audio.m4a" },
+							{ kind: "transcript_markdown", name: "transcript.md" },
+							{ kind: "summary_markdown", name: "summary.md" },
+						],
+					},
+				],
+			},
+		}),
+	});
+	render(<App client={make_client()} />);
+
+	expect(await screen.findByText("Ready")).toBeTruthy();
+	expect(
+		screen.getByText(
+			"Council could not store the video recording. The file was larger than the workspace can accept. Audio, transcript, and summary were still saved.",
+		),
+	).toBeTruthy();
+	expect(screen.getByText("Recording")).toBeTruthy();
+	expect(screen.getByText("Transcript")).toBeTruthy();
+	expect(screen.getByText("Summary")).toBeTruthy();
+});
+
 test("a failed meeting shows the failure reason on the row", async () => {
 	stub_council({
 		"/api/meetings/list": () => ({

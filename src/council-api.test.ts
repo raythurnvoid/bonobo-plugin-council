@@ -101,6 +101,7 @@ describe("create_council_api", () => {
 			maxParticipants: null,
 			destinationPath: null,
 			failureReason: null,
+			recordingWarning: null,
 			artifacts: [],
 		});
 	});
@@ -320,5 +321,32 @@ describe("create_council_api", () => {
 
 		const [listed] = await api.list_meetings();
 		expect(listed?.failureReason).toBe("Provider session ended without a recording");
+		expect(listed?.recordingWarning).toBeNull();
+	});
+
+	test("list keeps a string recordingWarning on a ready meeting", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () =>
+				json_response(200, {
+					meetings: [
+						{
+							id: "m1",
+							title: "Standup",
+							status: "ready",
+							recordingWarning:
+								"Council could not store the video recording. The file was larger than the workspace can accept. Audio, transcript, and summary were still saved.",
+							artifacts: [{ kind: "track_audio", name: "recording-audio.m4a" }],
+						},
+					],
+				}),
+			),
+		);
+		const api = create_council_api(make_client(["plu_first"]));
+
+		const [listed] = await api.list_meetings();
+		expect(listed?.recordingWarning).toBe(
+			"Council could not store the video recording. The file was larger than the workspace can accept. Audio, transcript, and summary were still saved.",
+		);
 	});
 });
