@@ -6539,7 +6539,7 @@ function createRoot(container) {
  * bounded finalized artifact summaries. Raw workspace node ids are not part of the page model.
  * Error bodies are `{message}`.
  */
-var COUNCIL_SERVICE_ORIGIN = "https://bonobo-council-service.ray-thurne-void.workers.dev";
+var COUNCIL_SERVICE_ORIGIN = "https://council.bonobo-senate.com";
 function as_record(value) {
 	return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
 }

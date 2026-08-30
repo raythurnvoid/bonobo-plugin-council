@@ -18,7 +18,7 @@
  * Error bodies are `{message}`.
  */
 
-export const COUNCIL_SERVICE_ORIGIN = "https://bonobo-council-service.ray-thurne-void.workers.dev";
+export const COUNCIL_SERVICE_ORIGIN = "https://council.bonobo-senate.com";
 
 export type CouncilMeeting = {
 	id: string;
