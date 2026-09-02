@@ -2,7 +2,7 @@
 	"schemaVersion": 1,
 	"name": "council",
 	"displayName": "Council",
-	"version": "0.2.5",
+	"version": "0.2.6",
 	"description": "Create recorded meetings with guest links. Read-only recordings, transcripts, summaries, and provider transcripts land in workspace files.",
 	"compatibility": {
 		"bonoboPluginRuntime": "1"
@@ -40,8 +40,8 @@
 		},
 		{
 			"path": "dist/frontend/assets/index.js",
-			"sha256": "sha256:aec4120265b16981908174272f50b87b1cbd7eca03892043b7f593748a84aba4",
-			"bytes": 302618,
+			"sha256": "sha256:1f11bbf809f48367639080aff49a649a64e7c0f36c5c935fac79561be277c08b",
+			"bytes": 303970,
 			"contentType": "application/javascript"
 		},
 		{
