@@ -34,7 +34,7 @@ describe("bonobo.plugin.json", () => {
 		expect(manifest.name).toBe("council");
 		expect(manifest.schemaVersion).toBe(1);
 		expect(manifest.compatibility.bonoboPluginRuntime).toBe("1");
-		expect(manifest.version).toBe("0.2.6");
+		expect(manifest.version).toBe("0.2.7");
 		expect(manifest.displayName.length).toBeLessThanOrEqual(80);
 		expect(manifest.description.length).toBeLessThanOrEqual(2000);
 	});
