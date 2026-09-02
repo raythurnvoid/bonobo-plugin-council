@@ -1,4 +1,4 @@
-import { bonobo_ui_connect } from "bonobo-plugin-sdk/frontend";
+import { bonobo_connect } from "bonobo-plugin-sdk/frontend";
 import { createRoot } from "react-dom/client";
 import { App } from "./app";
 import "./council.css";
@@ -23,7 +23,7 @@ if (!container) {
 const root = createRoot(container);
 root.render(<BootScreen message="Connecting…" />);
 
-bonobo_ui_connect().then(
+bonobo_connect().then(
 	(client) => {
 		// Council only declares a page; the context union still needs narrowing for the title.
 		if (client.context.kind === "page") {

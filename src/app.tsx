@@ -1,4 +1,4 @@
-import type { BonoboUiFrontendClient } from "bonobo-plugin-sdk/frontend";
+import type { BonoboClient } from "bonobo-plugin-sdk/frontend";
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type FormEvent, type MouseEvent } from "react";
 import {
 	COUNCIL_SERVICE_ORIGIN,
@@ -899,7 +899,7 @@ function MeetingGroup(props: {
 	);
 }
 
-export function App(props: { client: BonoboUiFrontendClient }) {
+export function App(props: { client: BonoboClient }) {
 	const api = useMemo(() => create_council_api(props.client), [props.client]);
 	const newMeetingId = `Council-${useId()}-new-meeting`;
 	const meetingsHeadingId = `${newMeetingId}-meetings-heading`;

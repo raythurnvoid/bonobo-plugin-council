@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/preact";
-import type { BonoboUiFrontendClient } from "bonobo-plugin-sdk/frontend";
+import type { BonoboClient } from "bonobo-plugin-sdk/frontend";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
@@ -7,11 +7,11 @@ import { App } from "./app";
 import { COUNCIL_SERVICE_ORIGIN } from "./council-api";
 import { meeting } from "./meeting-fixture";
 
-function make_client(): BonoboUiFrontendClient {
+function make_client(): BonoboClient {
 	return {
 		getToken: async () => "plu_test",
 		refreshToken: async () => "plu_test",
-	} as unknown as BonoboUiFrontendClient;
+	} as unknown as BonoboClient;
 }
 
 type RouteHandler = (body: unknown) => { status?: number; body: unknown } | Promise<{ status?: number; body: unknown }>;

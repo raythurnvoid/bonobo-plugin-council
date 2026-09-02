@@ -1,4 +1,4 @@
-import type { BonoboUiFrontendClient } from "bonobo-plugin-sdk/frontend";
+import type { BonoboClient } from "bonobo-plugin-sdk/frontend";
 import { createRoot } from "react-dom/client";
 import { App } from "./app";
 import { FIXTURE_NOW, meeting } from "./meeting-fixture";
@@ -128,6 +128,6 @@ window.fetch = async (input, init) => {
 const client = {
 	getToken: async () => "plu_preview",
 	refreshToken: async () => "plu_preview",
-} as unknown as BonoboUiFrontendClient;
+} as unknown as BonoboClient;
 
 createRoot(document.getElementById("root")!).render(<App client={client} />);
