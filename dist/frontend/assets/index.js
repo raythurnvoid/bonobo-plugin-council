@@ -3684,11 +3684,16 @@ var ConvexClient = class {
 	}
 };
 //#endregion
-//#region node_modules/.pnpm/bonobo-plugin-sdk@https+++c_c3e24dc53257375a3273c465d5ef2fcc/node_modules/bonobo-plugin-sdk/frontend.js
+//#region node_modules/.pnpm/bonobo-plugin-sdk@https+++c_8a8ab1c4ad155c180550a9d3a8d8745f/node_modules/bonobo-plugin-sdk/frontend.js
 /**
  * Bonobo plugin frontend SDK — hand-written browser ESM, no build step.
  *
  * Runs inside the host app's sandboxed plugin iframe for plugin pages and plugin file views alike.
+ * The comments below say "page" for both kinds, the way the host app's own notes do. Any text a
+ * MEMBER can end up reading must not: it has to say "plugin frame", because a member sitting in a
+ * file view is not on a page and never read these notes. That covers every `new Error(...)` the SDK
+ * rejects with, and the `message` it puts in a watch death — plugin code renders those verbatim.
+ *
  * The host handshake is a strict postMessage contract: the page announces `bonobo:ready`, the host
  * answers `bonobo:init` with a short-lived scoped session token (`plu_...`), the page context, and
  * the Convex deployment URL. From then on the page acts on its own:
@@ -3700,18 +3705,174 @@ var ConvexClient = class {
  *   same-origin `/plugins-ui/session-jwt` route. The host window is not part of that data path;
  *   it only answers session-token refreshes over the bridge.
  */
-/** `getToken` refreshes when the token is expired or expires within this margin. */
+/**
+ * `getToken` refreshes when the token is expired or expires within this margin.
+ */
 var TOKEN_EXPIRY_MARGIN_MS = 6e4;
 var READY_RETRY_MS = 500;
 var REFRESH_DEADLINE_MS = 1e4;
-var BRIDGE_NONCE_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+var AUTH_WAKE_POLL_MS = 1e3;
+var AUTH_WAKE_GAP_MS = 3e4;
+var NONCE_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 var DATA_MAX_NAME_LENGTH = 128;
 var DATA_MAX_KEY_PREFIX_LENGTH = 109;
 var DATA_MAX_LIST_PAGE_SIZE = 100;
+/**
+ * Printable ASCII only (0x21-0x7E, no space) — a literal code range for the same reason.
+ */
 var DATA_KEY_PREFIX_REGEX = /^[\x21-\x7e]+$/;
-var MAX_WATCH_SUBSCRIPTIONS = 8;
+/**
+ * The host's roster page size. Its own ceiling, not the document one above: the roster is paged
+ * because each row costs the server two document reads, and that has nothing to do with documents.
+ */
+var MEMBERS_MAX_LIST_PAGE_SIZE = 100;
+/**
+ * Max page-visible data watches (plain or window alike). One more answers a null death with
+ * reason "capacity". These caps are courtesy bounds the page enforces on itself: the server
+ * cannot meter reactive reads per session, so this is what keeps an honest page bounded.
+ * 16, not 8: `scopes.watchMine` tells a plugin to open one ranged read per private scope, and
+ * under 8 slots that guidance died at two scopes with a channel open (three windows plus a
+ * thread watch). Slots and intervals are what shape a page. The server-subscription count
+ * below is only a backstop for buggy or hostile pages — 16 slots × 6 intervals = 96, which
+ * stays under 100.
+ */
+var MAX_WATCH_SUBSCRIPTIONS = 16;
+/**
+ * Key intervals one document window may hold, committed plus pending. Worst case per window:
+ * 6 intervals × 100 docs × 16 KiB values ≈ 9.6 MiB flattened; a realistic chat channel stays
+ * around 1 MiB.
+ */
 var MAX_WINDOW_INTERVALS = 6;
-var MAX_PAGE_SERVER_SUBSCRIPTIONS = 24;
+/**
+ * Server subscriptions across the whole page: one per plain watch, one per window interval,
+ * committed and pending alike. This is a backstop for a buggy or hostile page, not a budget
+ * honest plugins design against. Every subscription re-reads the session's auth docs when a
+ * write invalidates it, so this ceiling bounds that fan-out. Honest pages stay inside the
+ * 16-slot and 6-interval caps above (96 server subscriptions at worst).
+ */
+var MAX_PAGE_SERVER_SUBSCRIPTIONS = 100;
+/**
+ * Reads a host theme off a bridge message.
+ *
+ * The host resolves its colour scales and sends the values under their custom property names,
+ * because a plugin page is a cross-origin document and inherits none of the host's custom
+ * properties. This comes over postMessage, so every field is checked before the page can see it.
+ *
+ * @param {unknown} value
+ * @returns {import("bonobo-plugin-sdk/frontend").BonoboUiTheme | null}
+ */
+function read_theme(value) {
+	if (typeof value !== "object" || value === null) return null;
+	const candidate = value;
+	if (candidate.mode !== "light" && candidate.mode !== "dark") return null;
+	if (typeof candidate.tokens !== "object" || candidate.tokens === null) return null;
+	/** @type {Record<string, string>} */
+	const tokens = {};
+	for (const [name, tokenValue] of Object.entries(candidate.tokens)) {
+		if (typeof tokenValue !== "string") return null;
+		tokens[name] = tokenValue;
+	}
+	return {
+		mode: candidate.mode,
+		tokens,
+	};
+}
+/**
+ * Paints a host theme onto this document.
+ *
+ * The frame is a cross-origin document, so the host's stylesheet never reaches it. The SDK writes
+ * each scale value onto the root element under the app's own custom property name, and puts the
+ * app's `light` / `dark` class on the root too. A plugin stylesheet can then use
+ * `var(--color-base-1-03)` and `.dark &` exactly as the app does, and no plugin has to copy this loop.
+ *
+ * @param {import("bonobo-plugin-sdk/frontend").BonoboUiTheme} theme
+ */
+function apply_theme(theme) {
+	const root = document.documentElement;
+	for (const [name, value] of Object.entries(theme.tokens)) root.style.setProperty(name, value);
+	root.classList.toggle("light", theme.mode === "light");
+	root.classList.toggle("dark", theme.mode === "dark");
+}
+/**
+ * The deaths the SDK can explain. The server answers the same opaque null for every denial, so
+ * these are what the SDK knows on its own: the store said no, the session it holds has run out, or
+ * the connection is not working. A page shows a different thing for each — sign in again is useless
+ * advice when the plugin was uninstalled.
+ */
+var DEATH_DENIED = {
+	reason: "denied",
+	message: "This plugin no longer has access to its data",
+};
+var DEATH_SESSION_EXPIRED = {
+	reason: "session_expired",
+	message: "This plugin session expired",
+};
+var DEATH_UNAVAILABLE = {
+	reason: "unavailable",
+	message: "The plugin data connection is unavailable",
+};
+/**
+ * Reads the exact principal-query shape before plugin code can use it. The Convex query is an
+ * outside boundary even though its generated TypeScript type is known to the host app.
+ *
+ * @param {unknown} value
+ * @returns {import("bonobo-plugin-sdk/frontend").BonoboUiScopePrincipal[] | null | undefined}
+ */
+function read_scope_principals(value) {
+	if (value === null) return null;
+	if (!Array.isArray(value)) return;
+	/** @type {import("bonobo-plugin-sdk/frontend").BonoboUiScopePrincipal[]} */
+	const principals = [];
+	for (const entry of value) {
+		if (typeof entry !== "object" || entry === null) return;
+		const principal = entry;
+		if (
+			typeof principal.userId !== "string" ||
+			principal.userId === "" ||
+			(principal.level !== "member" && principal.level !== "manage")
+		)
+			return;
+		principals.push({
+			userId: principal.userId,
+			level: principal.level,
+		});
+	}
+	return principals;
+}
+/** @returns {import("bonobo-plugin-sdk/frontend").BonoboUiScopePrincipalListResult} */
+function scope_principals_unavailable() {
+	return {
+		_nay: {
+			name: "unavailable",
+			message: "Failed to read who can access this",
+		},
+	};
+}
+/**
+ * Reads the invoke route's success body before plugin code can use it. The route is an outside
+ * boundary; `undefined` means the shape was not the contract, which the caller reports as
+ * unavailable rather than handing the page a half-checked object.
+ *
+ * @param {unknown} value
+ * @returns {{ runId: string, pluginStatus: number, output: string, outputTruncated: boolean } | undefined}
+ */
+function read_backend_invoke_success(value) {
+	if (typeof value !== "object" || value === null) return;
+	const body = value;
+	if (
+		typeof body.runId !== "string" ||
+		typeof body.pluginStatus !== "number" ||
+		typeof body.output !== "string" ||
+		typeof body.outputTruncated !== "boolean"
+	)
+		return;
+	return {
+		runId: body.runId,
+		pluginStatus: body.pluginStatus,
+		output: body.output,
+		outputTruncated: body.outputTruncated,
+	};
+}
 /**
  * Validates the `bonobo:init` context union: `kind: "page"` or `kind: "file_view"`.
  *
@@ -3744,17 +3905,29 @@ function is_ui_context(value) {
 /**
  * Reads the host origin and frame nonce from the URL fragment. The fragment is available to the
  * page but is not sent in the asset request, cache key, or referrer.
+ *
+ * Why the host passes its origin at all: `postMessage` needs a target origin, and the SDK must
+ * never send with `"*"`. The same SDK file runs under a localhost host and under the deployed
+ * host, so it cannot hardcode the value, and it cannot discover it reliably either
+ * (`document.referrer` depends on the referrer policy, `location.ancestorOrigins` is not in
+ * Firefox). A wrong value only makes the SDK talk to nobody; it never grants anything. The value
+ * is not authentication of the embedder. CSP `frame-ancestors` on the asset response decides who
+ * may embed the frame, and only the host's session mint can produce a token.
+ *
+ * The checks below are format checks, not an allowlist: exactly these two keys, an origin with
+ * no path or query, a UUIDv4 nonce.
  */
 function read_bridge_bootstrap() {
 	const fragment = window.location.hash.slice(1);
-	if (!fragment) throw new Error("Missing host bridge fragment — the page must be embedded by the Bonobo host app");
+	if (!fragment)
+		throw new Error("Missing host bridge fragment — this plugin frame must be embedded by the Bonobo host app");
 	const params = new URLSearchParams(fragment);
 	const parentOrigins = params.getAll("parentOrigin");
-	const bridgeNonces = params.getAll("bridgeNonce");
-	if (params.size !== 2 || parentOrigins.length !== 1 || bridgeNonces.length !== 1)
+	const nonces = params.getAll("nonce");
+	if (params.size !== 2 || parentOrigins.length !== 1 || nonces.length !== 1)
 		throw new Error("Invalid host bridge fragment");
 	const parentOrigin = parentOrigins[0];
-	const bridgeNonce = bridgeNonces[0];
+	const nonce = nonces[0];
 	let parsedParentOrigin;
 	try {
 		parsedParentOrigin = new URL(parentOrigin);
@@ -3766,10 +3939,10 @@ function read_bridge_bootstrap() {
 		parsedParentOrigin.origin !== parentOrigin
 	)
 		throw new Error("Invalid host bridge parent origin");
-	if (!BRIDGE_NONCE_PATTERN.test(bridgeNonce)) throw new Error("Invalid host bridge nonce");
+	if (!NONCE_PATTERN.test(nonce)) throw new Error("Invalid host bridge nonce");
 	return {
 		parentOrigin,
-		bridgeNonce,
+		nonce,
 	};
 }
 /**
@@ -3802,6 +3975,10 @@ function validate_watch_inputs(args) {
  * @property {import("bonobo-plugin-sdk").BonoboPublicDoc[] | null} docs
  * @property {boolean} truncated
  * @property {string | undefined} previousFirstKey
+ * @property {import("bonobo-plugin-sdk").BonoboPublicDoc[] | null} previousDocs The array this
+ *   interval held before its latest delivery. `handle_result` overwrites `docs` in place, so the
+ *   outgoing array has to be kept here or it is gone by the time a swap is decided. Read in exactly
+ *   one place — `snapshot_suppressed_docs`, when a pending swap starts.
  * @property {() => void} stop Dispose the watcher and release its server slot, exactly once.
  */
 /**
@@ -3841,24 +4018,36 @@ function validate_watch_inputs(args) {
  *   start_watch: DataStartWatch,
  *   acquire_server_slot: () => boolean,
  *   release_server_slot: () => void,
- *   page_at_ceiling: () => boolean,
+ *   page_at_ceiling: (requiredSlots?: number) => boolean,
  *   post_update: (payload: { docs: import("bonobo-plugin-sdk").BonoboPublicDoc[], hasMore: boolean, atCapacity: boolean, incomplete: boolean }) => void,
- *   on_dead: () => void,
+ *   on_dead: (info: { reason: string, message: string }) => void,
+ *   session_expired: () => boolean,
  * }} deps
  */
 function create_documents_window(deps) {
 	const state = {
 		/** @type {DocumentsWindowInterval[]} */
 		intervals: [],
-		/** @type {{ from: number, removeCount: number, replacements: DocumentsWindowInterval[] } | null} */
+		/**
+		 * `suppressedDocs` holds one flatten source per interval the swap suppresses, taken by value
+		 * when the swap starts and never updated afterwards. The suppressed intervals stay subscribed
+		 * until the commit, so without it a second delivery overwrites their `docs` and the flatten
+		 * grows a hole that `incomplete` is suppressed for.
+		 *
+		 * @type {{ from: number, removeCount: number, replacements: DocumentsWindowInterval[], suppressedDocs: (import("bonobo-plugin-sdk").BonoboPublicDoc[] | null)[] } | null}
+		 */
 		pending: null,
 		queuedLoadOlder: false,
-		/** Sticky: set on the first re-seat, when older docs are first known to exist. */
+		/**
+		 * Sticky: set on the first re-seat, when older docs are first known to exist.
+		 */
 		bottomOpen: false,
 		loadingOlder: false,
 		/** @type {DocumentsWindowInterval | null} */
 		awaitingTail: null,
-		/** One-shot: a refused load-older reports atCapacity on the next flush. */
+		/**
+		 * One-shot: a refused load-older reports atCapacity on the next flush.
+		 */
 		forceAtCapacity: false,
 		flushScheduled: false,
 		/** @type {string | null} */
@@ -3871,10 +4060,11 @@ function create_documents_window(deps) {
 		for (const interval of state.pending?.replacements ?? []) interval.stop();
 		state.pending = null;
 	};
-	const kill = () => {
+	/** @param {{ reason: string, message: string }} info */
+	const kill = (info) => {
 		if (state.dead) return;
 		stop_all();
-		deps.on_dead();
+		deps.on_dead(info);
 	};
 	/** @param {DocumentsWindowInterval} interval */
 	const start_interval = (interval) => {
@@ -3921,8 +4111,47 @@ function create_documents_window(deps) {
 		return fencepost;
 	};
 	const window_interval_count = () => state.intervals.length + (state.pending?.replacements.length ?? 0);
+	/**
+	 * The count the window will hold once the pending swap commits. `window_interval_count` is the
+	 * gross count — it counts the replacements while their parents are still committed — which is
+	 * what `reconcile` and the load-older reservation need, because those are asking whether another
+	 * subscription fits right now. `incomplete` asks a different question: whether a repair is still
+	 * possible after this swap lands, so it needs the net count. A split is +1 and a merge is -1.
+	 */
+	const settled_interval_count = () =>
+		state.intervals.length + (state.pending ? state.pending.replacements.length - state.pending.removeCount : 0);
+	/**
+	 * The flatten source for an interval a pending swap suppresses, taken once by value when the swap
+	 * starts. `interval.truncated` is the discriminator, and the two cases need opposite answers. A
+	 * split parent is truncated by construction, so its live array is the short one that would show a
+	 * hole — serve the array it held before that delivery. A merge member is never truncated: it
+	 * shrank because documents were physically deleted, so its live array is correct and serving the
+	 * retained one would put deleted documents back on screen for a round trip.
+	 *
+	 * The fallback covers an interval whose FIRST delivery truncated, which has no previous array.
+	 * Serving `[]` there would make every document in its range vanish for a round trip, which is the
+	 * failure this whole mechanism exists to prevent, so it declines to improve that case instead.
+	 *
+	 * @param {DocumentsWindowInterval} interval
+	 */
+	const snapshot_suppressed_docs = (interval) =>
+		interval.truncated ? (interval.previousDocs ?? interval.docs) : interval.docs;
+	/**
+	 * @param {number} index
+	 * @returns {import("bonobo-plugin-sdk").BonoboPublicDoc[] | null | undefined} The snapshot when a
+	 *   pending swap suppresses this index, `undefined` when it does not.
+	 */
+	const suppressed_docs_at = (index) => {
+		if (!state.pending) return;
+		const offset = index - state.pending.from;
+		if (offset < 0 || offset >= state.pending.removeCount) return;
+		return state.pending.suppressedDocs[offset];
+	};
 	const compute_payload = () => {
-		const docs = state.intervals.flatMap((interval) => interval.docs ?? []);
+		const docs = state.intervals.flatMap((interval, index) => {
+			const suppressed = suppressed_docs_at(index);
+			return (suppressed === void 0 ? interval.docs : suppressed) ?? [];
+		});
 		const last = state.intervals[state.intervals.length - 1];
 		return {
 			docs,
@@ -3934,12 +4163,16 @@ function create_documents_window(deps) {
 					return false;
 				return (
 					split_fencepost(interval) === null ||
-					window_interval_count() + 1 > MAX_WINDOW_INTERVALS ||
-					deps.page_at_ceiling()
+					settled_interval_count() + 1 > MAX_WINDOW_INTERVALS ||
+					deps.page_at_ceiling(2)
 				);
 			}),
 		};
 	};
+	/**
+	 * One flush per microtask, and a post only when the WHOLE payload changed. Comparing docs
+	 * alone would swallow the hasMore transition, because a re-seat is content-neutral on purpose.
+	 */
 	const schedule_flush = () => {
 		if (state.flushScheduled || state.dead) return;
 		state.flushScheduled = true;
@@ -3975,7 +4208,7 @@ function create_documents_window(deps) {
 		interval.end = fencepost;
 		interval.truncated = false;
 		state.bottomOpen = true;
-		if (!start_interval(interval)) kill();
+		if (!start_interval(interval)) kill(DEATH_UNAVAILABLE);
 	};
 	const execute_load_older = () => {
 		if (state.dead || state.loadingOlder || state.pending || !compute_payload().hasMore) return;
@@ -3985,13 +4218,20 @@ function create_documents_window(deps) {
 			report_at_capacity();
 			return;
 		}
-		/** @type {DocumentsWindowInterval} */
+		/**
+		 * The new tail starts at the STORED bound, not at a delivered key — the last interval's
+		 * delivered array can be empty after physical deletes, but its bound was a real key once
+		 * and stays a valid fencepost.
+		 *
+		 * @type {DocumentsWindowInterval}
+		 */
 		const tail = {
 			start: last.end,
 			end: null,
 			docs: null,
 			truncated: false,
 			previousFirstKey: void 0,
+			previousDocs: null,
 			stop: () => {},
 		};
 		if (!start_interval(tail)) {
@@ -4032,6 +4272,7 @@ function create_documents_window(deps) {
 				docs: null,
 				truncated: false,
 				previousFirstKey: void 0,
+				previousDocs: null,
 				stop: () => {},
 			};
 			/** @type {DocumentsWindowInterval} */
@@ -4041,6 +4282,7 @@ function create_documents_window(deps) {
 				docs: null,
 				truncated: false,
 				previousFirstKey: void 0,
+				previousDocs: null,
 				stop: () => {},
 			};
 			if (!start_interval(left)) break;
@@ -4052,6 +4294,7 @@ function create_documents_window(deps) {
 				from: index,
 				removeCount: 1,
 				replacements: [left, right],
+				suppressedDocs: [snapshot_suppressed_docs(interval)],
 			};
 			return;
 		}
@@ -4067,6 +4310,7 @@ function create_documents_window(deps) {
 				docs: null,
 				truncated: false,
 				previousFirstKey: void 0,
+				previousDocs: null,
 				stop: () => {},
 			};
 			if (!start_interval(merged)) break;
@@ -4074,10 +4318,15 @@ function create_documents_window(deps) {
 				from: index,
 				removeCount: 2,
 				replacements: [merged],
+				suppressedDocs: [snapshot_suppressed_docs(first), snapshot_suppressed_docs(second)],
 			};
 			return;
 		}
 	};
+	/**
+	 * All-or-nothing: the swap commits only once every replacement has a delivered result, so
+	 * the flattened list never shows a partially re-read range.
+	 */
 	const commit_pending = () => {
 		const pending = state.pending;
 		state.pending = null;
@@ -4093,15 +4342,18 @@ function create_documents_window(deps) {
 	const handle_result = (interval, outcome) => {
 		if (state.dead) return;
 		if ("queryError" in outcome) {
-			console.error("[bonobo-plugin-sdk] Plugin data window interval failed:", outcome.queryError);
-			kill();
+			const info = deps.session_expired() ? DEATH_SESSION_EXPIRED : DEATH_UNAVAILABLE;
+			if (info === DEATH_UNAVAILABLE)
+				console.error("[bonobo-plugin-sdk] Plugin data window interval failed:", outcome.queryError);
+			kill(info);
 			return;
 		}
 		if (outcome.value === null) {
-			kill();
+			kill(DEATH_DENIED);
 			return;
 		}
 		interval.previousFirstKey = interval.docs?.[0]?.key;
+		interval.previousDocs = interval.docs;
 		interval.docs = outcome.value.docs;
 		interval.truncated = outcome.value.truncated;
 		if (state.awaitingTail === interval) {
@@ -4115,13 +4367,19 @@ function create_documents_window(deps) {
 		schedule_flush();
 		reconcile();
 	};
-	/** @type {DocumentsWindowInterval} */
+	/**
+	 * START: one unbounded subscription, exactly the shape of a plain capped watch. The window
+	 * machinery only engages when this first interval reports truncated.
+	 *
+	 * @type {DocumentsWindowInterval}
+	 */
 	const head = {
 		start: null,
 		end: null,
 		docs: null,
 		truncated: false,
 		previousFirstKey: void 0,
+		previousDocs: null,
 		stop: () => {},
 	};
 	if (!start_interval(head)) return null;
@@ -4142,10 +4400,13 @@ function create_documents_window(deps) {
 	};
 }
 /**
- * Builds the client's `data` and `members` APIs over an injectable reactive-read primitive.
- * `bonobo_ui_connect` wires it to the page's own Convex client; the SDK test suite injects a
- * fake `start_watch` instead, so the watch and window semantics run without a server. Plugin
- * code should use the client from `bonobo_ui_connect`, never call this directly.
+ * Builds the client's `data`, `members` and `scopes` APIs over an injectable reactive-read primitive.
+ * `bonobo_ui_connect` wires it to the page's own Convex client. Plugin code should use the client
+ * from `bonobo_ui_connect`, never call this directly — which is why this is NOT exported. The
+ * package publishes `frontend.js` next to a hand-written `frontend.d.ts`, and nothing compares
+ * the two (`typecheck` runs `tsc --skipLibCheck` over `frontend.js` alone), so an `export` here
+ * would ship a runtime symbol the type surface does not declare. The SDK test suite reaches this
+ * through `bonobo_ui_connect` and drives the seam from the fake Convex client instead.
  *
  * The `start_watch` dep starts one reactive read of the plugin's document store. `onResult`
  * receives `{ value }` (the query answer — `null` is the store's denial) or `{ queryError }`,
@@ -4154,13 +4415,24 @@ function create_documents_window(deps) {
  *
  * @param {{
  *   start_watch: DataStartWatch,
+ *   start_recent_watch: (queryArgs: Record<string, unknown>, onResult: (outcome: { value: { docs: import("bonobo-plugin-sdk").BonoboPublicDoc[], truncated: boolean } | null } | { queryError: unknown }) => void) => { dispose: () => void } | null,
+ *   start_changes_watch: (queryArgs: Record<string, unknown>, onResult: (outcome: { value: { docs: import("bonobo-plugin-sdk").BonoboPublicDoc[], truncated: boolean } | null } | { queryError: unknown }) => void) => { dispose: () => void } | null,
  *   run_user_write: (op: "append" | "put" | "remove" | "putOwned" | "removeOwned", fields: Record<string, unknown>) => Promise<unknown>,
  *   resolve_member_display: (userIds: string[]) => Promise<{ members: Record<string, string | null> } | null>,
+ *   list_members: (limit: number, cursor: string | null) => Promise<{ members: import("bonobo-plugin-sdk/frontend").BonoboUiMember[], cursor: string | null } | { refusal: string } | null>,
+ *   run_manage_scope: (action: Record<string, unknown>) => Promise<unknown>,
+ *   list_scope_principals: (scopeId: string) => Promise<unknown>,
+ *   start_my_scopes_watch: (onResult: (outcome: { value: import("bonobo-plugin-sdk/frontend").BonoboUiScope[] | null } | { queryError: unknown }) => void) => { dispose: () => void } | null,
+ *   session_expired: () => boolean,
  * }} deps
- * @returns {{ data: import("bonobo-plugin-sdk/frontend").BonoboUiFrontendClient["data"], members: import("bonobo-plugin-sdk/frontend").BonoboUiFrontendClient["members"] }}
+ * @returns {{ data: import("bonobo-plugin-sdk/frontend").BonoboUiFrontendClient["data"], members: import("bonobo-plugin-sdk/frontend").BonoboUiFrontendClient["members"], scopes: import("bonobo-plugin-sdk/frontend").BonoboUiFrontendClient["scopes"] }}
  */
 function bonobo_ui_create_data_api(deps) {
-	/** @type {Set<object>} */
+	/**
+	 * Live page-visible subscriptions: a plain watch and a document window each hold one entry.
+	 *
+	 * @type {Set<object>}
+	 */
 	const registrations = /* @__PURE__ */ new Set();
 	let serverSubscriptionCount = 0;
 	const acquire_server_slot = () => {
@@ -4171,8 +4443,19 @@ function bonobo_ui_create_data_api(deps) {
 	const release_server_slot = () => {
 		serverSubscriptionCount -= 1;
 	};
-	const page_at_ceiling = () => serverSubscriptionCount >= MAX_PAGE_SERVER_SUBSCRIPTIONS;
 	/**
+	 * `requiredSlots` defaults to 1, which is the same test as `count >= MAX`. A caller that is about
+	 * to start more than one watcher passes how many it needs, so it can tell "no room at all" apart
+	 * from "no room for the pair I am about to start".
+	 *
+	 * @param {number} [requiredSlots]
+	 */
+	const page_at_ceiling = (requiredSlots = 1) =>
+		serverSubscriptionCount + requiredSlots > MAX_PAGE_SERVER_SUBSCRIPTIONS;
+	/**
+	 * A death decided right in the watch call still must arrive like a real one: after the
+	 * caller has its unsubscribe handle, on the same async timing a cached server answer has.
+	 *
 	 * @param {(docs: null, info?: { reason: string, message: string }) => void} onUpdate
 	 * @param {{ reason: string, message: string }} [info]
 	 */
@@ -4187,8 +4470,74 @@ function bonobo_ui_create_data_api(deps) {
 		console.warn("[bonobo-plugin-sdk] Data watch refused, subscription cap reached");
 		deliver_death_async(onUpdate, {
 			reason: "capacity",
-			message: "Subscription limit reached for this page",
+			message: "Subscription limit reached for this plugin frame",
 		});
+	};
+	/**
+	 * Hold one page-visible subscription and turn every way it can end into the page's death
+	 * callback.
+	 *
+	 * Two doors need this and they must not drift: a missed `release_server_slot` leaks a slot the
+	 * page never gets back, and the frame then refuses later watches for no visible reason. `start`
+	 * owns what is being read; everything here is the bookkeeping around it.
+	 *
+	 * @template TValue, TPayload
+	 * @param {{
+	 *   start: (onOutcome: (outcome: { value: TValue | null } | { queryError: unknown }) => void) => { dispose: () => void } | null,
+	 *   onUpdate: (payload: TPayload | null, info?: { reason: string, message: string }) => void,
+	 *   deliver: (value: TValue) => TPayload,
+	 *   failureLabel: string,
+	 * }} args
+	 * @returns {() => void}
+	 */
+	const start_registered_watch = (args) => {
+		if (registrations.size >= MAX_WATCH_SUBSCRIPTIONS || page_at_ceiling()) {
+			refuse_capacity(args.onUpdate);
+			return () => {};
+		}
+		if (!acquire_server_slot()) {
+			refuse_capacity(args.onUpdate);
+			return () => {};
+		}
+		const entry = {};
+		registrations.add(entry);
+		/** @type {{ dispose: () => void } | null} */
+		let subscription = null;
+		/**
+		 * Death and unsubscribe share this: the registration entry decides liveness, so a
+		 * late delivery or a second unsubscribe after either path is a no-op.
+		 */
+		const stop = () => {
+			if (!registrations.delete(entry)) return;
+			subscription?.dispose();
+			release_server_slot();
+		};
+		subscription = args.start((outcome) => {
+			if (!registrations.has(entry)) return;
+			if ("queryError" in outcome) {
+				const info = deps.session_expired() ? DEATH_SESSION_EXPIRED : DEATH_UNAVAILABLE;
+				if (info === DEATH_UNAVAILABLE)
+					console.error(`[bonobo-plugin-sdk] Plugin ${args.failureLabel} failed:`, outcome.queryError);
+				stop();
+				args.onUpdate(null, info);
+				return;
+			}
+			if (outcome.value === null) {
+				stop();
+				args.onUpdate(null, DEATH_DENIED);
+				return;
+			}
+			args.onUpdate(args.deliver(outcome.value));
+		});
+		if (!subscription) {
+			stop();
+			console.error(`[bonobo-plugin-sdk] Plugin ${args.failureLabel} could not start`);
+			deliver_death_async(args.onUpdate);
+			return () => {};
+		}
+		return function unsubscribe() {
+			stop();
+		};
 	};
 	/** @type {import("bonobo-plugin-sdk/frontend").BonoboUiFrontendClient["data"]} */
 	const data = {
@@ -4205,55 +4554,88 @@ function bonobo_ui_create_data_api(deps) {
 				});
 				return () => {};
 			}
-			if (registrations.size >= MAX_WATCH_SUBSCRIPTIONS || page_at_ceiling()) {
-				refuse_capacity(onUpdate);
+			return start_registered_watch({
+				start: (onOutcome) =>
+					deps.start_watch(
+						{
+							collection: opts.collection,
+							...(opts.keyPrefix === void 0 ? {} : { keyPrefix: opts.keyPrefix }),
+							limit: opts.limit,
+						},
+						null,
+						onOutcome,
+					),
+				onUpdate,
+				deliver: (value) => ({
+					docs: value.docs,
+					truncated: value.truncated,
+				}),
+				failureLabel: "data watch",
+			});
+		},
+		watchRecent(opts, onUpdate) {
+			const invalid = validate_watch_inputs({
+				collection: opts.collection,
+				limit: opts.limit,
+			});
+			if (invalid) {
+				deliver_death_async(onUpdate, {
+					reason: "invalid",
+					message: invalid,
+				});
 				return () => {};
 			}
-			if (!acquire_server_slot()) {
-				refuse_capacity(onUpdate);
+			return start_registered_watch({
+				start: (onOutcome) =>
+					deps.start_recent_watch(
+						{
+							collection: opts.collection,
+							limit: opts.limit,
+							...(opts.order === void 0 ? {} : { order: opts.order }),
+							...(opts.since === void 0 ? {} : { since: opts.since }),
+							...(opts.before === void 0 ? {} : { before: opts.before }),
+							...(opts.scopeId === void 0 ? {} : { scopeId: opts.scopeId }),
+						},
+						onOutcome,
+					),
+				onUpdate,
+				deliver: (value) => ({
+					docs: value.docs,
+					truncated: value.truncated,
+				}),
+				failureLabel: "recent watch",
+			});
+		},
+		watchChanges(opts, onUpdate) {
+			const invalid = validate_watch_inputs({
+				collection: opts.collection,
+				limit: opts.limit,
+			});
+			if (invalid) {
+				deliver_death_async(onUpdate, {
+					reason: "invalid",
+					message: invalid,
+				});
 				return () => {};
 			}
-			const entry = {};
-			registrations.add(entry);
-			/** @type {{ dispose: () => void } | null} */
-			let subscription = null;
-			const stop = () => {
-				if (!registrations.delete(entry)) return;
-				subscription?.dispose();
-				release_server_slot();
-			};
-			subscription = deps.start_watch(
-				{
-					collection: opts.collection,
-					...(opts.keyPrefix === void 0 ? {} : { keyPrefix: opts.keyPrefix }),
-					limit: opts.limit,
-				},
-				null,
-				(outcome) => {
-					if (!registrations.has(entry)) return;
-					if ("queryError" in outcome) {
-						console.error("[bonobo-plugin-sdk] Plugin data watch failed:", outcome.queryError);
-						stop();
-						onUpdate(null);
-						return;
-					}
-					if (outcome.value === null) {
-						stop();
-						onUpdate(null);
-						return;
-					}
-					onUpdate(outcome.value.docs);
-				},
-			);
-			if (!subscription) {
-				stop();
-				console.error("[bonobo-plugin-sdk] Plugin data watch could not start");
-				deliver_death_async(onUpdate);
-				return () => {};
-			}
-			return function unsubscribe() {
-				stop();
-			};
+			return start_registered_watch({
+				start: (onOutcome) =>
+					deps.start_changes_watch(
+						{
+							collection: opts.collection,
+							limit: opts.limit,
+							...(opts.updatedSince === void 0 ? {} : { updatedSince: opts.updatedSince }),
+							...(opts.scopeId === void 0 ? {} : { scopeId: opts.scopeId }),
+						},
+						onOutcome,
+					),
+				onUpdate,
+				deliver: (value) => ({
+					docs: value.docs,
+					truncated: value.truncated,
+				}),
+				failureLabel: "changes watch",
+			});
 		},
 		watchWindow(opts, onUpdate) {
 			const inertHandle = {
@@ -4289,10 +4671,11 @@ function bonobo_ui_create_data_api(deps) {
 				release_server_slot,
 				page_at_ceiling,
 				post_update: (payload) => onUpdate(payload),
-				on_dead: () => {
+				on_dead: (info) => {
 					registrations.delete(entry);
-					onUpdate(null);
+					onUpdate(null, info);
 				},
+				session_expired: deps.session_expired,
 			});
 			if (!documentsWindow) {
 				registrations.delete(entry);
@@ -4351,7 +4734,7 @@ function bonobo_ui_create_data_api(deps) {
 	/**
 	 * Every write resolves with the store door's Result as-is, `_yay` and `_nay` alike. A thrown
 	 * call (network loss, a payload the Convex client cannot serialize) resolves the stable
-	 * generic `_nay`; the real cause stays in the log.
+	 * `unavailable` `_nay`; the real cause stays in the log.
 	 *
 	 * @param {"append" | "put" | "remove" | "putOwned" | "removeOwned"} op
 	 * @param {Record<string, unknown>} fields
@@ -4361,22 +4744,161 @@ function bonobo_ui_create_data_api(deps) {
 			.then(() => deps.run_user_write(op, fields))
 			.catch((error) => {
 				console.error("[bonobo-plugin-sdk] Plugin data write failed:", error);
-				return { _nay: { message: "Failed to write plugin data" } };
+				return {
+					_nay: {
+						name: "unavailable",
+						message: "Failed to write plugin data",
+					},
+				};
+			});
+	}
+	/** @type {import("bonobo-plugin-sdk/frontend").BonoboUiFrontendClient["members"]} */
+	const members = {
+		resolve(userIds) {
+			return Promise.resolve()
+				.then(() => deps.resolve_member_display(userIds))
+				.then((result) => {
+					return result === null ? {} : result.members;
+				})
+				.catch((error) => {
+					console.error("[bonobo-plugin-sdk] Failed to resolve plugin member names:", error);
+					return {};
+				});
+		},
+		list(opts) {
+			if (!Number.isInteger(opts.limit) || opts.limit < 1 || opts.limit > MEMBERS_MAX_LIST_PAGE_SIZE)
+				return Promise.resolve({
+					_nay: {
+						name: "invalid",
+						message: `Member list limits must be integers from 1 to ${MEMBERS_MAX_LIST_PAGE_SIZE}`,
+					},
+				});
+			return Promise.resolve()
+				.then(() => deps.list_members(opts.limit, opts.cursor ?? null))
+				.then((result) => {
+					if (result === null)
+						return {
+							_nay: {
+								name: DEATH_DENIED.reason,
+								message: "This plugin no longer has access to this workspace",
+							},
+						};
+					if ("refusal" in result)
+						return {
+							_nay: {
+								name: "not_consented",
+								message: "This workspace has not granted this plugin the member list",
+							},
+						};
+					return {
+						_yay: {
+							members: result.members,
+							cursor: result.cursor,
+						},
+					};
+				})
+				.catch((error) => {
+					const info = deps.session_expired() ? DEATH_SESSION_EXPIRED : DEATH_UNAVAILABLE;
+					if (info === DEATH_UNAVAILABLE)
+						console.error("[bonobo-plugin-sdk] Failed to list plugin workspace members:", error);
+					return {
+						_nay: {
+							name: info.reason,
+							message: info.message,
+						},
+					};
+				});
+		},
+	};
+	/**
+	 * Runs one scope change. Same resolve-never-reject contract as a data write, with a named
+	 * unavailable fallback so the page can tell an uncertain call from a backend refusal.
+	 *
+	 * @param {Record<string, unknown>} action
+	 * @returns {Promise<import("bonobo-plugin-sdk/frontend").BonoboUiScopeResult>}
+	 */
+	function run_scope(action) {
+		return Promise.resolve()
+			.then(() => deps.run_manage_scope(action))
+			.then((result) => result)
+			.catch((error) => {
+				console.error("[bonobo-plugin-sdk] Plugin scope change failed:", error);
+				return {
+					_nay: {
+						name: "unavailable",
+						message: "Failed to change who can read this",
+					},
+				};
 			});
 	}
 	return {
 		data,
-		members: {
-			resolve(userIds) {
+		members,
+		scopes: {
+			create(opts) {
+				return run_scope({
+					kind: "create",
+					scopeId: opts.scopeId,
+					collections: opts.collections,
+					keyPrefix: opts.keyPrefix,
+				});
+			},
+			createWithDocument(opts) {
+				return run_scope({
+					kind: "create_with_document",
+					scopeId: opts.scopeId,
+					collections: opts.collections,
+					keyPrefix: opts.keyPrefix,
+					principals: opts.principals,
+					document: opts.document,
+				});
+			},
+			setPrincipal(opts) {
+				return run_scope({
+					kind: "set_principal",
+					scopeId: opts.scopeId,
+					userId: opts.userId,
+					level: opts.level,
+				});
+			},
+			removePrincipal(opts) {
+				return run_scope({
+					kind: "remove_principal",
+					scopeId: opts.scopeId,
+					userId: opts.userId,
+					...(opts.expectedPrincipalCount === void 0 ? {} : { expectedPrincipalCount: opts.expectedPrincipalCount }),
+				});
+			},
+			delete(opts) {
+				return run_scope({
+					kind: "delete",
+					scopeId: opts.scopeId,
+					...(opts.expectedPrincipalCount === void 0 ? {} : { expectedPrincipalCount: opts.expectedPrincipalCount }),
+				});
+			},
+			listPrincipals(opts) {
 				return Promise.resolve()
-					.then(() => deps.resolve_member_display(userIds))
-					.then((result) => {
-						return result === null ? {} : result.members;
+					.then(() => deps.list_scope_principals(opts.scopeId))
+					.then((value) => {
+						const principals = read_scope_principals(value);
+						if (principals === void 0) {
+							console.error("[bonobo-plugin-sdk] Plugin scope principals response was invalid");
+							return scope_principals_unavailable();
+						}
+						return { _yay: principals };
 					})
 					.catch((error) => {
-						console.error("[bonobo-plugin-sdk] Failed to resolve plugin member names:", error);
-						return {};
+						console.error("[bonobo-plugin-sdk] Failed to read plugin scope principals:", error);
+						return scope_principals_unavailable();
 					});
+			},
+			watchMine(onUpdate) {
+				return start_registered_watch({
+					start: (onOutcome) => deps.start_my_scopes_watch(onOutcome),
+					onUpdate,
+					deliver: (value) => value,
+					failureLabel: "scope watch",
+				});
 			},
 		},
 	};
@@ -4416,6 +4938,40 @@ function create_convex_data_deps(convexClient) {
 	return {
 		start_watch,
 		/**
+		 * @param {Record<string, unknown>} queryArgs
+		 * @param {(outcome: { value: any } | { queryError: unknown }) => void} onResult
+		 */
+		start_recent_watch: (queryArgs, onResult) => {
+			try {
+				const unsubscribe = convexClient.onUpdate(
+					anyApi.plugins_data.watch_recent,
+					queryArgs,
+					(value) => onResult({ value }),
+					(queryError) => onResult({ queryError }),
+				);
+				return { dispose: () => void unsubscribe() };
+			} catch {
+				return null;
+			}
+		},
+		/**
+		 * @param {Record<string, unknown>} queryArgs
+		 * @param {(outcome: { value: any } | { queryError: unknown }) => void} onResult
+		 */
+		start_changes_watch: (queryArgs, onResult) => {
+			try {
+				const unsubscribe = convexClient.onUpdate(
+					anyApi.plugins_data.watch_changes,
+					queryArgs,
+					(value) => onResult({ value }),
+					(queryError) => onResult({ queryError }),
+				);
+				return { dispose: () => void unsubscribe() };
+			} catch {
+				return null;
+			}
+		},
+		/**
 		 * @param {"append" | "put" | "remove" | "putOwned" | "removeOwned"} op
 		 * @param {Record<string, unknown>} fields
 		 */
@@ -4435,11 +4991,38 @@ function create_convex_data_deps(convexClient) {
 		},
 		/** @param {string[]} userIds */
 		resolve_member_display: (userIds) => convexClient.query(anyApi.plugins_data.resolve_member_display, { userIds }),
+		/**
+		 * @param {number} limit
+		 * @param {string | null} cursor
+		 */
+		list_members: (limit, cursor) =>
+			convexClient.query(anyApi.plugins_data.list_members, {
+				limit,
+				cursor,
+			}),
+		/** @param {Record<string, unknown>} action */
+		run_manage_scope: (action) => convexClient.mutation(anyApi.plugins_data.user_manage_scope, { action }),
+		/** @param {string} scopeId */
+		list_scope_principals: (scopeId) => convexClient.query(anyApi.plugins_data.watch_scope_principals, { scopeId }),
+		/** @param {(outcome: { value: any } | { queryError: unknown }) => void} onResult */
+		start_my_scopes_watch: (onResult) => {
+			try {
+				const unsubscribe = convexClient.onUpdate(
+					anyApi.plugins_data.watch_my_scopes,
+					{},
+					(value) => onResult({ value }),
+					(queryError) => onResult({ queryError }),
+				);
+				return { dispose: () => void unsubscribe() };
+			} catch {
+				return null;
+			}
+		},
 	};
 }
 /**
  * Connects the page to the embedding host app. It installs one shared `message` listener (for
- * init and token responses), posts `{ type: "bonobo:ready", bridgeNonce }` to `window.parent`,
+ * init and token responses), posts `{ type: "bonobo:ready", nonce }` to `window.parent`,
  * and resolves with the frontend client when the host's `bonobo:init` arrives. `bonobo:init`
  * messages after the first are ignored.
  *
@@ -4448,18 +5031,50 @@ function create_convex_data_deps(convexClient) {
  * messages only from that origin, `window.parent`, and the matching nonce. The session token
  * travels over postMessage only and is never placed in a URL.
  *
+ * The nonce is a conversation id for one mount of one iframe, not a secret. The host makes a new
+ * one per mount and puts it in the URL, so a new mount always loads a fresh document. It does
+ * three jobs: the host releases the token only after a ready message that carries it, which
+ * proves this document read this mount's fragment; a late init or token from a previous mount
+ * carries the old nonce and is dropped; and it backs up the `window.parent` check, because a
+ * window keeps its identity across navigations while the document behind it changes.
+ *
  * On init the SDK also opens the page's own Convex client against the init's `convexUrl`. The
  * client authenticates with short-lived plugin-session JWTs minted by exchanging the session
  * token at the same-origin `/plugins-ui/session-jwt` route; the `data` and `members` APIs run on
  * that client directly.
  *
+ * Token lifetimes, so plugin code never handles refresh itself: the session token lives 30
+ * minutes; `getToken` refreshes it through the host when it is expired or within 60 seconds of
+ * expiry, and a normal API call that meets a 401 refreshes once and retries once. The host
+ * rotates the token on the same session while that session lives. When the session is already
+ * gone (the device slept past its expiry), the host mints a new session for this same frame and
+ * answers the same refresh with its token, so the page keeps its state; the SDK treats that
+ * token like any rotation. The plugin-session JWT lives 10 minutes, capped by the session
+ * expiry; Convex asks for a new one when it runs out. The session record on the host is the
+ * kill switch: every plugin door reads it on each call, so revoking it ends every live
+ * subscription at once whatever a JWT says.
+ *
+ * Secrets never reach this frame. A `plu_` token has no secrets scope, and the SDK has no
+ * secrets API. A page that needs a secret calls its own backend through `backend.invoke`; the
+ * backend run reads the secret with `env.BONOBO.secrets.get(name)`.
+ *
  * @returns {Promise<import("bonobo-plugin-sdk/frontend").BonoboUiFrontendClient>}
  */
 async function bonobo_ui_connect() {
-	const { parentOrigin, bridgeNonce } = read_bridge_bootstrap();
+	const { parentOrigin, nonce } = read_bridge_bootstrap();
 	let apiOrigin = "";
 	let token = "";
 	let tokenExpiresAt = 0;
+	/**
+	 * Theme state — set by `bonobo:init`, replaced by `bonobo:theme` when the member switches the
+	 * host's theme. Each one is painted onto the document as it arrives. It stays null when the host
+	 * sends none, and then the document keeps the page's own colours.
+	 *
+	 * @type {import("bonobo-plugin-sdk/frontend").BonoboUiTheme | null}
+	 */
+	let theme = null;
+	/** @type {Set<(theme: import("bonobo-plugin-sdk/frontend").BonoboUiTheme) => void>} */
+	const themeSubscribers = /* @__PURE__ */ new Set();
 	/** @type {Map<string, { resolve: (token: string) => void, reject: (error: Error) => void, timeout: ReturnType<typeof setTimeout> }>} */
 	const pending_refreshes = /* @__PURE__ */ new Map();
 	/** @type {Promise<string> | null} */
@@ -4487,7 +5102,7 @@ async function bonobo_ui_connect() {
 		refresh_in_flight = new Promise((resolve, reject) => {
 			const timeout = setTimeout(() => {
 				pending_refreshes.delete(requestId);
-				reject(/* @__PURE__ */ new Error("Plugin page token refresh timed out"));
+				reject(/* @__PURE__ */ new Error("Plugin frame token refresh timed out"));
 			}, REFRESH_DEADLINE_MS);
 			pending_refreshes.set(requestId, {
 				resolve,
@@ -4498,7 +5113,7 @@ async function bonobo_ui_connect() {
 				window.parent.postMessage(
 					{
 						type: "bonobo:token-refresh-request",
-						bridgeNonce,
+						nonce,
 						requestId,
 					},
 					parentOrigin,
@@ -4522,7 +5137,7 @@ async function bonobo_ui_connect() {
 	 *
 	 * @param {string} path - Public API path starting with `/`, e.g. `"/api/v1/files/list"`.
 	 * @param {{ method?: string, headers?: Record<string, string>, body?: unknown }} [init]
-	 * @returns {Promise<any>}
+	 * @returns {Promise<unknown>}
 	 */
 	async function fetchJson(path, init) {
 		const has_body = init?.body !== void 0;
@@ -4549,10 +5164,96 @@ async function bonobo_ui_connect() {
 		}
 		return response.json();
 	}
+	/** @type {import("bonobo-plugin-sdk/frontend").BonoboUiFrontendClient["backend"]} */
+	const backend = {
+		invoke(opts) {
+			return fetchJson("/api/v1/plugin-backend/invoke", {
+				body: {
+					endpoint: opts.endpoint,
+					...(opts.input === void 0 ? {} : { input: opts.input }),
+					...(opts.serializationKey === void 0 ? {} : { serializationKey: opts.serializationKey }),
+				},
+			})
+				.then((response) => {
+					const result = read_backend_invoke_success(response);
+					if (result === void 0) {
+						console.error("[bonobo-plugin-sdk] Plugin backend invoke response was invalid");
+						return {
+							_nay: {
+								name: DEATH_UNAVAILABLE.reason,
+								message: "Failed to run the plugin backend",
+							},
+						};
+					}
+					return { _yay: result };
+				})
+				.catch((error) => {
+					const errorRecord = typeof error === "object" && error !== null ? error : null;
+					const status = typeof errorRecord?.status === "number" ? errorRecord.status : null;
+					/** @type {Record<string, unknown> | null} */
+					let refusal = null;
+					if (typeof errorRecord?.responseText === "string")
+						try {
+							const parsed = JSON.parse(errorRecord.responseText);
+							refusal = typeof parsed === "object" && parsed !== null ? parsed : null;
+						} catch {
+							refusal = null;
+						}
+					const message = typeof refusal?.message === "string" ? refusal.message : null;
+					if (status === 409 || status === 429)
+						return {
+							_nay: {
+								name: "busy",
+								message: message ?? "The plugin backend is busy",
+								...(typeof refusal?.retryAfterMs === "number" ? { retryAfterMs: refusal.retryAfterMs } : {}),
+							},
+						};
+					if (status === 401 || status === 403) {
+						if (Date.now() >= tokenExpiresAt)
+							return {
+								_nay: {
+									name: DEATH_SESSION_EXPIRED.reason,
+									message: DEATH_SESSION_EXPIRED.message,
+								},
+							};
+						return {
+							_nay: {
+								name: DEATH_DENIED.reason,
+								message: message ?? "This plugin may not run its backend here",
+							},
+						};
+					}
+					if (status !== null && status < 500 && message !== null)
+						return {
+							_nay: {
+								name: "invalid",
+								message,
+							},
+						};
+					if (Date.now() >= tokenExpiresAt)
+						return {
+							_nay: {
+								name: DEATH_SESSION_EXPIRED.reason,
+								message: DEATH_SESSION_EXPIRED.message,
+							},
+						};
+					console.error("[bonobo-plugin-sdk] Plugin backend invoke failed:", error);
+					return {
+						_nay: {
+							name: DEATH_UNAVAILABLE.reason,
+							message: "Failed to run the plugin backend",
+						},
+					};
+				});
+		},
+	};
 	/**
 	 * Exchanges the session token for a short-lived plugin-session JWT at the asset origin's
-	 * `/plugins-ui/session-jwt` route. A same-origin JSON POST, so there is no preflight; the
-	 * route answers only same-origin pages, so the JWT never becomes readable cross-origin.
+	 * `/plugins-ui/session-jwt` route. For a published frame this is a same-origin JSON POST with
+	 * no preflight, and the route answers no other origin, so the JWT never becomes readable
+	 * cross-origin. The one exception is the app's development-only frame override: a dev
+	 * deployment may allowlist exactly one extra origin for this route, and the same POST then
+	 * runs preflighted from there.
 	 *
 	 * @param {string} sessionToken
 	 */
@@ -4566,12 +5267,15 @@ async function bonobo_ui_connect() {
 	 * The Convex client's auth callback. Every call mints a fresh JWT, so a repeated call never
 	 * hands back a stale one.
 	 *
-	 * This chain is also what keeps an open healthy page alive: `getToken()` refreshes the
-	 * session token through the host when the session is within 60 seconds of its expiry, and
-	 * that host refresh EXTENDS the session and moves its scheduled deletion. A page that slept
-	 * past the session expiry cannot recover here — the session doc is gone, every path below
-	 * answers null, and null tells the Convex client this page is unauthenticated (its
-	 * subscriptions die; the host frame's Retry or a reload mints a fresh session).
+	 * This chain is also what keeps an open page alive: `getToken()` refreshes the session
+	 * token through the host when the session is within 60 seconds of its expiry, and that host
+	 * refresh EXTENDS the session and moves its scheduled deletion. A page that slept past the
+	 * session expiry recovers here too: the host finds the session doc gone, mints a new session
+	 * for this same frame, and answers the refresh with the new token, so the exchange below
+	 * succeeds and the Convex client re-runs its query set under the new session. Only when the
+	 * host refuses to mint (uninstalled, membership ended, rate limit) does every path below
+	 * answer null, and null tells the Convex client this page is unauthenticated (its
+	 * subscriptions die; by then the host has replaced the frame with its error state and Retry).
 	 */
 	async function fetch_convex_jwt() {
 		for (let attempt = 0; ; attempt += 1) {
@@ -4603,7 +5307,7 @@ async function bonobo_ui_connect() {
 			window.parent.postMessage(
 				{
 					type: "bonobo:ready",
-					bridgeNonce,
+					nonce,
 				},
 				parentOrigin,
 			);
@@ -4619,7 +5323,7 @@ async function bonobo_ui_connect() {
 			if (
 				message.type === "bonobo:init" &&
 				!initialized &&
-				message.bridgeNonce === bridgeNonce &&
+				message.nonce === nonce &&
 				typeof message.apiOrigin === "string" &&
 				typeof message.convexUrl === "string" &&
 				typeof message.token === "string" &&
@@ -4637,21 +5341,50 @@ async function bonobo_ui_connect() {
 					expectAuth: true,
 					unsavedChangesWarning: false,
 				});
+				let lastAuthWakePollAt = Date.now();
+				const authWakeInterval = setInterval(() => {
+					const now = Date.now();
+					if (now - lastAuthWakePollAt >= AUTH_WAKE_GAP_MS) convexClient.setAuth(fetch_convex_jwt);
+					lastAuthWakePollAt = now;
+				}, AUTH_WAKE_POLL_MS);
 				convexClient.setAuth(fetch_convex_jwt);
-				window.addEventListener("pagehide", () => void convexClient.close(), { once: true });
-				const { data, members } = bonobo_ui_create_data_api(create_convex_data_deps(convexClient));
+				window.addEventListener(
+					"pagehide",
+					() => {
+						clearInterval(authWakeInterval);
+						convexClient.close();
+					},
+					{ once: true },
+				);
+				theme = read_theme(message.theme);
+				if (theme) apply_theme(theme);
+				const { data, members, scopes } = bonobo_ui_create_data_api({
+					...create_convex_data_deps(convexClient),
+					session_expired: () => Date.now() >= tokenExpiresAt,
+				});
 				resolve({
 					context: message.context,
 					apiOrigin,
 					getToken,
 					refreshToken,
 					fetchJson,
+					backend,
 					data,
 					members,
+					scopes,
+					theme: {
+						current: () => theme,
+						subscribe(onChange) {
+							themeSubscribers.add(onChange);
+							return () => {
+								themeSubscribers.delete(onChange);
+							};
+						},
+					},
 				});
 			} else if (
 				initialized &&
-				message.bridgeNonce === bridgeNonce &&
+				message.nonce === nonce &&
 				message.type === "bonobo:token" &&
 				typeof message.requestId === "string" &&
 				typeof message.token === "string" &&
@@ -4666,9 +5399,16 @@ async function bonobo_ui_connect() {
 					tokenExpiresAt = message.tokenExpiresAt;
 					pending.resolve(message.token);
 				}
+			} else if (initialized && message.nonce === nonce && message.type === "bonobo:theme") {
+				const next = read_theme(message.theme);
+				if (next) {
+					theme = next;
+					apply_theme(next);
+					for (const onChange of themeSubscribers) onChange(next);
+				}
 			} else if (
 				initialized &&
-				message.bridgeNonce === bridgeNonce &&
+				message.nonce === nonce &&
 				message.type === "bonobo:token-error" &&
 				typeof message.requestId === "string" &&
 				typeof message.message === "string"
