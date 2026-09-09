@@ -2,7 +2,7 @@
 
 Council is the members-only dashboard for the Council meeting service. A workspace member creates a meeting, saves the one-time guest invite, opens the meeting, copies a single-use host room link, and follows processing from the same page.
 
-The room is not part of this plugin. The Council Worker in `packages/council-service` serves it on its own origin, so a guest never reaches the app origin or this members-only page.
+The room is not part of this plugin. The Council Worker in `packages/council` serves it on its own origin, so a guest never reaches the app origin or this members-only page.
 
 ## Dashboard flow
 
@@ -28,11 +28,12 @@ Council asks the service upload API to create every artifact as read-only. Trans
 
 ## Service connection and capabilities
 
-- `plugin.service.connect` lets the Council service exchange the page token for an installation-bound service grant.
-- `plugin.data.read` and `plugin.data.write` cover the service's meeting documents.
-- `workspace.files.write` lets the sealed processing grant create meeting artifacts under its destination prefix.
+- `plugin.service.connect` lets the Council service exchange the page token for an installation-bound service grant. The Worker keeps every meeting in its own D1 database and uses no plugin data, so the manifest declares neither `plugin.data` capability.
+- `workspace.files.write` lets the sealed processing grant create meeting artifacts and the meeting note under its destination prefix.
 - `workspace.files.create-read-only` lets that same narrow upload request lock only the file it creates. It cannot lock an existing member file.
 - `ui.outbound.fetch` plus `uiOutboundOrigins` lets the page call only the Council Worker origin.
+
+Capabilities are not enough on their own. Every artifact and the meeting note are created read-only, and Press lets a service create a read-only file only when the installation's service account holds **Can manage** at the destination (the workspace root is enough). A workspace owner sets that on the Service accounts page (`/w/<org>/<workspace>/service-accounts`, account "Council"). With only "Can write", the host refuses every note write and every read-only upload with `403 Permission denied`, and meetings end without files. This was the case in every workspace after the 2026-09-07 service-account backfill, which granted "Can write".
 
 Every page call gets a current `plu_` token from `bonobo-plugin-sdk/frontend`. A `401` refreshes it once. Join codes and room links use copy actions because the iframe has no popup permission.
 
@@ -74,3 +75,5 @@ Do not deploy or publish as part of a normal source change. A release needs sepa
 14. Reopen meeting creation.
 
 After an approved `0.2.0` publish, the installation must review and accept the new read-only-file capability. Until it does, the service-grant exchange refuses every page call with 403, and the dashboard cannot get a grant at all, because the exchange is the only thing that creates one. So the member cannot list, create, open, close, or delete a meeting. The whole page is dead, not only the artifact writing.
+
+`0.2.14` drops `plugin.data.read` and `plugin.data.write`. Publish it only after the Council Worker that no longer calls the plugin-data routes is deployed and the service registration's scopes are `files:write` alone. Upgrading an installation kills every service grant it holds. The page exchanges again on its next call, but a meeting that is still `processing` loses its sealed grant and its run fails on the next host call. So upgrade only when no meeting is `processing` or `deleting`. The order and the checks are in `packages/council/README.md` under the release gate, step 5a.

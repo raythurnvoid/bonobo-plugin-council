@@ -34,7 +34,7 @@ describe("bonobo.plugin.json", () => {
 		expect(manifest.name).toBe("council");
 		expect(manifest.schemaVersion).toBe(1);
 		expect(manifest.compatibility.bonoboPluginRuntime).toBe("1");
-		expect(manifest.version).toBe("0.2.13");
+		expect(manifest.version).toBe("0.2.14");
 		expect(manifest.displayName.length).toBeLessThanOrEqual(80);
 		expect(manifest.description.length).toBeLessThanOrEqual(2000);
 	});
@@ -51,9 +51,9 @@ describe("bonobo.plugin.json", () => {
 	test("declares the exact capability set the Council exchange requires", () => {
 		// plugin.service.connect requires plugin.data.read or workspace.files.write, and
 		// ui.outbound.fetch requires UI outbound origins — both directions are publish rejections.
+		// The Worker keeps its meeting state in its own D1 and never reads or writes plugin data,
+		// so neither plugin.data capability is declared: a consent line for a door nobody uses.
 		expect([...manifest.capabilities].sort()).toEqual([
-			"plugin.data.read",
-			"plugin.data.write",
 			"plugin.service.connect",
 			"ui.outbound.fetch",
 			"workspace.files.create-read-only",

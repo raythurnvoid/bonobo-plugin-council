@@ -6,12 +6,11 @@
  * any other destination. The token is fetched from the host bridge per call and never stored; a
  * `401` asks the host for a fresh token exactly once and retries.
  *
- * This token handoff uses `plugin.service.connect`. The Council exchange requires
- * `plugin.data.read`, and `plugin.data.write` lets the Worker reserve and update meeting state. It
- * uses `workspace.files.write` and
- * `workspace.files.create-read-only` to save recordings, transcripts, summaries, and provider
- * transcripts as locked workspace artifacts. The page reaches that Worker through
- * `ui.outbound.fetch` and declares no other page outbound origin.
+ * This token handoff uses `plugin.service.connect`. The Worker keeps every meeting in its own
+ * database and reads or writes no plugin data. It uses `workspace.files.write` and
+ * `workspace.files.create-read-only` to save recordings, transcripts, summaries, provider
+ * transcripts, and the meeting note as locked workspace files. The page reaches that Worker
+ * through `ui.outbound.fetch` and declares no other page outbound origin.
  *
  * Response shapes are validated at this boundary. The list keeps the meeting history and its
  * bounded finalized artifact summaries. Raw workspace node ids are not part of the page model.
