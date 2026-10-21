@@ -39,14 +39,14 @@ Every page call gets a current `plu_` token from `bonobo-plugin-sdk/frontend`. A
 
 ## Development
 
-Run Node-backed commands through Vite Plus. Keep `--ignore-workspace` because this plugin is a standalone git submodule.
+Run Node-backed commands through Vite Plus. Do not add `--ignore-workspace`: this repo has its own `pnpm-workspace.yaml`, and pnpm 12 skips it with that flag.
 
 ```powershell
-vp env exec pnpm --ignore-workspace install
-vp env exec pnpm --ignore-workspace run test:once
-vp env exec pnpm --ignore-workspace run typecheck
-vp env exec pnpm --ignore-workspace run build
-vp env exec pnpm --ignore-workspace run build:verify
+vp env exec pnpm install
+vp env exec pnpm run test:once
+vp env exec pnpm run typecheck
+vp env exec pnpm run build
+vp env exec pnpm run build:verify
 ```
 
 `pnpm build` creates `dist/frontend/`, formats the readable JS and CSS, discovers every emitted frontend file, and rebuilds the manifest inventory. The manifest command refuses unknown extensions, MIME mismatches, invalid UTF-8 review text, more than 64 files, files over 900,000 bytes, artifacts over 16 MiB, and combined review text over 900,000 bytes. A line over 1,000 characters prints non-blocking review advice.

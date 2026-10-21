@@ -607,9 +607,10 @@ test("creating a meeting shows the one-time join code with the cannot-retrieve w
 	fireEvent.input(screen.getByLabelText("Meeting title"), { target: { value: "Planning" } });
 	fireEvent.submit(document.querySelector("form.create-form")!);
 
-	expect(await screen.findByDisplayValue("code-shown-once")).toBeTruthy();
+	const invitePanel = (await screen.findByDisplayValue("code-shown-once")).closest("section")!;
 	expect(screen.getByDisplayValue("https://council.example.com/room?m=m9")).toBeTruthy();
-	expect(screen.getByText(/cannot show it again/)).toBeTruthy();
+	// Read the warning inside the panel. The new meeting's card says "cannot show it again" too.
+	expect(within(invitePanel).getByText(/cannot show it again/)).toBeTruthy();
 	expect(
 		calls.some((call) => call.path === "/api/meetings/create" && JSON.stringify(call.body) === '{"title":"Planning"}'),
 	).toBe(true);
@@ -749,6 +750,11 @@ test("opening the meeting from its card takes the invite panel's second button a
 	fireEvent.input(screen.getByLabelText("Meeting title"), { target: { value: "Planning" } });
 	fireEvent.submit(document.querySelector("form.create-form")!);
 	const invitePanel = (await screen.findByDisplayValue("code-shown-once")).closest("section")!;
+	// Wait for the panel to take focus on mount, the way it does before a member can press anything.
+	// Otherwise that late focus move lands after the press below.
+	await waitFor(() => {
+		expect(document.activeElement).toBe(within(invitePanel).getByRole("heading", { level: 2, name: "Planning" }));
+	});
 
 	// The new meeting also gets a card, and the card offers the same Open action. Press that one.
 	const row = (await screen.findByRole("heading", { level: 4, name: "Planning" })).closest("li")!;

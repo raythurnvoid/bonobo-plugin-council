@@ -11,7 +11,10 @@ if (!pnpmPath) {
 }
 
 function run_build() {
-	const result = spawnSync(process.execPath, [pnpmPath, "run", "build"], { cwd: root, stdio: "inherit" });
+	// pnpm 12 can be a native binary, so run it directly unless it is a JS file.
+	const result = /\.[cm]?js$/u.test(pnpmPath)
+		? spawnSync(process.execPath, [pnpmPath, "run", "build"], { cwd: root, stdio: "inherit" })
+		: spawnSync(pnpmPath, ["run", "build"], { cwd: root, stdio: "inherit" });
 	if (result.status !== 0) {
 		throw new Error(`Council build failed with exit code ${result.status ?? "unknown"}`);
 	}
