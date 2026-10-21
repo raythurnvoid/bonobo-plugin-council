@@ -63,7 +63,7 @@ Do not deploy or publish as part of a normal source change. A release needs sepa
 2. Apply Council D1 migrations `0006`, `0007`, and `0008`. `0008` drops the two `meeting_tracks` columns nothing ever wrote, `participant_id` and `start_offset_ms`.
 3. Deploy the strict core upload contract and the new read-only capability.
 4. Deploy the final Council Worker.
-5. Confirm the SDK commit pinned in `package.json` resolves to `0.9.2` in `pnpm-lock.yaml`. The mirror is already pushed.
+5. Confirm the SDK commit pinned in `package.json` resolves to the SDK version you expect in `pnpm-lock.yaml` (`0.18.0` today), and that the SDK mirror already has that commit.
 6. Update Council source and set the same unused version in `bonobo.plugin.json` and `package.json`.
 7. Run the focused tests and typecheck.
 8. Run `build:verify`. It fingerprints the release files on disk, then runs the full build twice. It fails when the second build changes a release byte, and when the files that were on disk no longer match a fresh build. It never reads git, so it cannot tell you whether those files are also committed.
