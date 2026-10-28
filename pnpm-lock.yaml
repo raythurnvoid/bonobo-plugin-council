@@ -167,8 +167,8 @@ importers:
   .:
     dependencies:
       bonobo-plugin-sdk:
-        specifier: github:raythurnvoid/bonobo-plugin-sdk#ea875be3eaf4c51df85233a52fad095b8625c1b5
-        version: https://codeload.github.com/raythurnvoid/bonobo-plugin-sdk/tar.gz/ea875be3eaf4c51df85233a52fad095b8625c1b5(convex@1.47.0(react@19.3.1))(react@19.3.1)
+        specifier: github:raythurnvoid/bonobo-plugin-sdk#00fb32707c6c8e48be2cfb9e1074f64c4011a6ff
+        version: https://codeload.github.com/raythurnvoid/bonobo-plugin-sdk/tar.gz/00fb32707c6c8e48be2cfb9e1074f64c4011a6ff(convex@1.47.0(react@19.3.1))(react@19.3.1)
       convex:
         specifier: 1.47.0
         version: 1.47.0(react@19.3.1)
@@ -714,9 +714,9 @@ packages:
     resolution: {integrity: sha512-wvUjBtSGN7+7SjNpq/9M2Tg350UZD3q62IFZLbRAR1bSMlCo1ZaeW+BJ+D090e4hIIZLBcTDWe4Mh4jvUDajzQ==}
     engines: {node: '>= 0.4'}
 
-  bonobo-plugin-sdk@https://codeload.github.com/raythurnvoid/bonobo-plugin-sdk/tar.gz/ea875be3eaf4c51df85233a52fad095b8625c1b5:
-    resolution: {gitHosted: true, integrity: sha512-x2WvVNb7cbuLYj70l9qKxrecNhIIXBEPqDep5lJYjbxUdKdC7EUo53fySdzeWkzyCX22GvFMj17QUavsdCANJQ==, tarball: https://codeload.github.com/raythurnvoid/bonobo-plugin-sdk/tar.gz/ea875be3eaf4c51df85233a52fad095b8625c1b5}
-    version: 0.23.0
+  bonobo-plugin-sdk@https://codeload.github.com/raythurnvoid/bonobo-plugin-sdk/tar.gz/00fb32707c6c8e48be2cfb9e1074f64c4011a6ff:
+    resolution: {gitHosted: true, integrity: sha512-0AHOz17fWTS00t3Ilc1XAP7G3DrpF/mzg3ANoaKJCcAu4NrQMokCPG33mpyj4fvjvPnWlERCDJ73kWlwqfjpFg==, tarball: https://codeload.github.com/raythurnvoid/bonobo-plugin-sdk/tar.gz/00fb32707c6c8e48be2cfb9e1074f64c4011a6ff}
+    version: 0.24.0
     peerDependencies:
       convex: ^1.46.0
       react: ^19.3.0
@@ -1610,7 +1610,7 @@ snapshots:
     dependencies:
       possible-typed-array-names: 1.1.0
 
-  bonobo-plugin-sdk@https://codeload.github.com/raythurnvoid/bonobo-plugin-sdk/tar.gz/ea875be3eaf4c51df85233a52fad095b8625c1b5(convex@1.47.0(react@19.3.1))(react@19.3.1):
+  bonobo-plugin-sdk@https://codeload.github.com/raythurnvoid/bonobo-plugin-sdk/tar.gz/00fb32707c6c8e48be2cfb9e1074f64c4011a6ff(convex@1.47.0(react@19.3.1))(react@19.3.1):
     dependencies:
       '@cloudflare/workers-types': 4.20260702.1
       convex: 1.47.0(react@19.3.1)

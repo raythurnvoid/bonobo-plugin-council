@@ -34,7 +34,7 @@ describe("bonobo.plugin.json", () => {
 		expect(manifest.name).toBe("council");
 		expect(manifest.schemaVersion).toBe(1);
 		expect(manifest.compatibility.bonoboPluginRuntime).toBe("1");
-		expect(manifest.version).toBe("0.2.16");
+		expect(manifest.version).toBe("0.2.17");
 		expect(manifest.displayName.length).toBeLessThanOrEqual(80);
 		expect(manifest.description.length).toBeLessThanOrEqual(2000);
 	});
@@ -56,7 +56,7 @@ describe("bonobo.plugin.json", () => {
 		expect([...manifest.capabilities].sort()).toEqual([
 			"plugin.service.connect",
 			"ui.outbound.fetch",
-			"workspace.files.create-read-only",
+			"workspace.files.manage-read-only",
 			"workspace.files.write",
 		]);
 	});

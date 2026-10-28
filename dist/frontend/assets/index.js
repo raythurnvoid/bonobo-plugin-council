@@ -6057,7 +6057,7 @@ var ConvexReactClient = class {
 };
 src_default.createContext(void 0);
 //#endregion
-//#region node_modules/.pnpm/bonobo-plugin-sdk@https+++c_2657e010b0f589e042060e0e2bb9c329/node_modules/bonobo-plugin-sdk/frontend.js
+//#region node_modules/.pnpm/bonobo-plugin-sdk@https+++c_a599b85229b8f9ee8ce702b7bd4e9473/node_modules/bonobo-plugin-sdk/frontend.js
 /**
  * The plugin doors with the types the app generated into `convex-api.d.ts`. `anyApi` builds any
  * reference at runtime, so this cast is the one place the SDK trusts that the generated file
@@ -6701,8 +6701,9 @@ function createRoot(container) {
  *
  * This token handoff uses `plugin.service.connect`. The Worker keeps every meeting in its own
  * database and reads or writes no plugin data. It uses `workspace.files.write` and
- * `workspace.files.create-read-only` to save recordings, transcripts, summaries, provider
- * transcripts, and the meeting note as locked workspace files. The page reaches that Worker
+ * `workspace.files.manage-read-only` to create Read-only recordings, transcripts, summaries,
+ * provider transcripts, and meeting notes. It uses force when updating or archiving these files.
+ * File permissions still apply. The page reaches that Worker
  * through `ui.outbound.fetch` and declares no other page outbound origin.
  *
  * Response shapes are validated at this boundary. The list keeps the meeting history and its

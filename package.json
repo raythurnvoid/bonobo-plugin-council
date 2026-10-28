@@ -1,7 +1,7 @@
 {
 	"name": "@bonobo/plugin-council",
 	"private": true,
-	"version": "0.2.16",
+	"version": "0.2.17",
 	"type": "module",
 	"scripts": {
 		"build": "vite build && prettier --write dist/frontend/assets/index.js dist/frontend/assets/index.css && node scripts/strip-release-trailing-whitespace.mjs && node scripts/build-manifest.mjs",
@@ -14,7 +14,7 @@
 	},
 	"packageManager": "pnpm@12.14.0",
 	"dependencies": {
-		"bonobo-plugin-sdk": "github:raythurnvoid/bonobo-plugin-sdk#ea875be3eaf4c51df85233a52fad095b8625c1b5",
+		"bonobo-plugin-sdk": "github:raythurnvoid/bonobo-plugin-sdk#00fb32707c6c8e48be2cfb9e1074f64c4011a6ff",
 		"convex": "1.47.0",
 		"preact": "11.0.1",
 		"react": "19.3.1",

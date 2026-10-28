@@ -8,8 +8,9 @@
  *
  * This token handoff uses `plugin.service.connect`. The Worker keeps every meeting in its own
  * database and reads or writes no plugin data. It uses `workspace.files.write` and
- * `workspace.files.create-read-only` to save recordings, transcripts, summaries, provider
- * transcripts, and the meeting note as locked workspace files. The page reaches that Worker
+ * `workspace.files.manage-read-only` to create Read-only recordings, transcripts, summaries,
+ * provider transcripts, and meeting notes. It uses force when updating or archiving these files.
+ * File permissions still apply. The page reaches that Worker
  * through `ui.outbound.fetch` and declares no other page outbound origin.
  *
  * Response shapes are validated at this boundary. The list keeps the meeting history and its
