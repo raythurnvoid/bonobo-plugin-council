@@ -1,19 +1,23 @@
 # Bonobo Plugin Council
 
-Council is the members-only dashboard for the Council meeting service. A workspace member creates a meeting, saves the one-time guest invite, opens the meeting, copies a single-use host room link, and follows processing from the same page.
+Council is the members-only dashboard for the Council meeting service. A workspace member creates a meeting, chooses guest access, shares the invite, opens the meeting, copies a single-use host room link, and follows processing from the same page.
 
 The room is not part of this plugin. The Council Worker in `packages/council` serves it on its own origin, so a guest never reaches the app origin or this members-only page.
 
 ## Dashboard flow
 
-1. Create a meeting with a required title.
-2. Save the join code and guest link. The service stores only the code hash, so the dashboard cannot show the invite again.
+1. Create a meeting with a required title. Choose **Token required** (the default), **Host approval**, or **Anyone with the link** under **Guest access**.
+2. Share the guest link. Token rooms also need the join code. Approval rooms let guests ask to join; a host approves each guest in the room. Link rooms admit anyone who has the link.
 3. Select **Open meeting**. The meeting moves from `created` to `open`.
 4. Select **Get host room link**, copy the single-use link, and open it in a new browser tab.
 5. Close the meeting when the call ends. Council shows processing without hiding the last useful meeting list if a later refresh fails.
 6. Find finished artifacts under `/meetings/<meeting-id>/` on the host Files page.
 
 Cards show timestamps, participant count, destination, status, and friendly artifact labels. They never show raw workspace node ids. The current SDK has no host-navigation bridge, so this secure iframe explains where files are instead of trying to open a host page.
+
+Created and open cards offer **Show invite**, including after a reload. The page fetches the invite only when asked. **Hide invite** clears it from the card. Codes stay in page memory and never enter the meeting list, logs, or localStorage. The service encrypts new token codes so members can retrieve them again. Older token rooms may have only a code hash: their invite still shows the guest link, but explains that the original saved code is needed.
+
+The dashboard sends `POST /api/meetings/create` with `{title, admissionMode}`. The service defaults omitted modes to `token` for older callers. Each meeting has `admissionMode: "token" | "approval" | "link"`. Create returns `{meeting, joinCode, guestUrl}`; `POST /api/meetings/invite` accepts `{meetingId}` and returns `{joinCode, guestUrl}`. `joinCode` is a string for recoverable token rooms and `null` for other modes or older unrecoverable codes. Both routes require the current member page token.
 
 ## Saved artifacts
 
@@ -55,7 +59,7 @@ vp env exec pnpm run build:verify
 
 Commit `dist/`. The publisher reads these exact bytes from the Council repository.
 
-For local visual checks, run the Vite development command and open `preview.html?state=all`. The preview uses fixed data and never calls a deployed service. Supported focused states are `open`, `recording_start_unknown`, `processing`, `ready`, `failed`, `delete_failed`, `loading`, `empty`, `error`, and `stale`. A focused state other than `loading`, `empty`, `error`, and `stale` is matched against a meeting **status**, so it works only when a fixture carries that status. `created` is not one of them, despite what this line used to say: `?state=created` renders a card titled `Preview has no fixture for ?state=created`. Use the create form for a real `created` card, as the next sentence describes. The stale state shows cards first, then keeps them under a refresh error after the next poll. Create a meeting in any normal state to inspect the one-time invite and its real `created → open` interaction.
+For local visual checks, run the Vite development command and open `preview.html?state=all`. The preview uses fixed data and never calls a deployed service. Supported focused states are `created`, `open`, `recording_start_unknown`, `processing`, `ready`, `failed`, `delete_failed`, `loading`, `empty`, `error`, and `stale`. Guest access fixtures also support `?state=token`, `?state=approval`, and `?state=link`. Other focused values show a card naming the missing fixture. The stale state shows cards first, then keeps them under a refresh error after the next poll. The all state includes an older token room with an unrecoverable code. Use **Show invite** on a listed card, reload and show it again, or create a meeting in each mode to inspect its `created → open` flow.
 
 ## Release checklist
 

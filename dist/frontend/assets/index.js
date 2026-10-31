@@ -6749,13 +6749,20 @@ function parse_artifacts(value) {
 }
 function parse_meeting(value) {
 	const record = as_record(value);
-	if (!record || typeof record.id !== "string" || typeof record.title !== "string" || typeof record.status !== "string")
+	if (
+		!record ||
+		typeof record.id !== "string" ||
+		typeof record.title !== "string" ||
+		(record.admissionMode !== "token" && record.admissionMode !== "approval" && record.admissionMode !== "link") ||
+		typeof record.status !== "string"
+	)
 		return null;
 	const artifacts = parse_artifacts(record.artifacts);
 	if (artifacts === null) return null;
 	return {
 		id: record.id,
 		title: record.title,
+		admissionMode: record.admissionMode,
 		status: record.status,
 		createdAt: as_optional_number(record.createdAt),
 		openedAt: as_optional_number(record.openedAt),
@@ -6807,13 +6814,32 @@ function create_council_api(client) {
 			}
 			return meetings;
 		},
-		async create_meeting(title) {
-			const data = as_record(await post("/api/meetings/create", { title }));
+		async create_meeting(title, admissionMode = "token") {
+			const data = as_record(
+				await post("/api/meetings/create", {
+					title,
+					admissionMode,
+				}),
+			);
 			const meeting = data ? parse_meeting(data.meeting) : null;
-			if (!data || !meeting || typeof data.joinCode !== "string" || typeof data.guestUrl !== "string")
+			if (
+				!data ||
+				!meeting ||
+				(data.joinCode !== null && typeof data.joinCode !== "string") ||
+				typeof data.guestUrl !== "string"
+			)
 				throw unexpected_response("create");
 			return {
 				meeting,
+				joinCode: data.joinCode,
+				guestUrl: data.guestUrl,
+			};
+		},
+		async get_invite(meetingId) {
+			const data = as_record(await post("/api/meetings/invite", { meetingId }));
+			if (!data || (data.joinCode !== null && typeof data.joinCode !== "string") || typeof data.guestUrl !== "string")
+				throw unexpected_response("invite");
+			return {
 				joinCode: data.joinCode,
 				guestUrl: data.guestUrl,
 			};
@@ -7062,11 +7088,13 @@ var TITLE_MAX_BYTES = 200;
 function CreateMeetingForm(props) {
 	const rootId = `CreateMeetingForm-${useId()}`;
 	const titleId = `${rootId}-title-input`;
+	const admissionModeId = `${rootId}-admission-mode`;
 	const titleHelpId = `${rootId}-title-helper`;
 	const actionErrorId = `${rootId}-action-error`;
 	const titleRef = useRef(null);
 	const actionErrorRef = useRef(null);
 	const [title, setTitle] = useState("");
+	const [admissionMode, setAdmissionMode] = useState("token");
 	const [busy, setBusy] = useState(false);
 	const [fieldError, setFieldError] = useState(null);
 	const [actionError, setActionError] = useState(null);
@@ -7097,7 +7125,7 @@ function CreateMeetingForm(props) {
 		}
 		setBusy(true);
 		setActionError(null);
-		props.api.create_meeting(title.trim()).then(
+		props.api.create_meeting(title.trim(), admissionMode).then(
 			(created) => {
 				setBusy(false);
 				setTitle("");
@@ -7160,6 +7188,37 @@ function CreateMeetingForm(props) {
 						: null,
 				],
 			}),
+			/* @__PURE__ */ createVNode("div", {
+				className: "field",
+				children: [
+					/* @__PURE__ */ createVNode("label", {
+						htmlFor: admissionModeId,
+						children: "Guest access",
+					}),
+					/* @__PURE__ */ createVNode("select", {
+						id: admissionModeId,
+						value: admissionMode,
+						onChange: (event) => {
+							setAdmissionMode(event.currentTarget.value);
+							setActionError(null);
+						},
+						children: [
+							/* @__PURE__ */ createVNode("option", {
+								value: "token",
+								children: "Token required",
+							}),
+							/* @__PURE__ */ createVNode("option", {
+								value: "approval",
+								children: "Host approval",
+							}),
+							/* @__PURE__ */ createVNode("option", {
+								value: "link",
+								children: "Anyone with the link",
+							}),
+						],
+					}),
+				],
+			}),
 			actionError !== null
 				? /* @__PURE__ */ createVNode("p", {
 						ref: actionErrorRef,
@@ -7179,7 +7238,9 @@ function CreateMeetingForm(props) {
 		],
 	});
 }
-/** Keep the guest invite here only, because the service never stores the plaintext join code. */
+/**
+ * Keep the new invite visible while the member opens the meeting.
+ */
 function CreatedMeetingPanel(props) {
 	const headingId = `${`CreatedMeetingPanel-${useId()}`}-heading`;
 	const headingRef = useRef(null);
@@ -7190,6 +7251,7 @@ function CreatedMeetingPanel(props) {
 	const [error, setError] = useState(null);
 	const canOpen = props.status === "created";
 	const isOpen = props.status === "open";
+	const canInvite = canOpen || isOpen;
 	useEffect(() => {
 		headingRef.current?.focus();
 	}, []);
@@ -7224,7 +7286,7 @@ function CreatedMeetingPanel(props) {
 		children: [
 			/* @__PURE__ */ createVNode("p", {
 				className: "section-kicker",
-				children: "One-time invite",
+				children: "Guest invite",
 			}),
 			/* @__PURE__ */ createVNode("h2", {
 				id: headingId,
@@ -7232,25 +7294,37 @@ function CreatedMeetingPanel(props) {
 				ref: headingRef,
 				children: props.created.meeting.title,
 			}),
-			/* @__PURE__ */ createVNode("p", {
-				className: "created-panel-warning",
-				children: "Save the join code now. Council cannot show it again.",
-			}),
-			/* @__PURE__ */ createVNode(CopyRow, {
-				label: "Join code",
-				value: props.created.joinCode,
-			}),
-			/* @__PURE__ */ createVNode(CopyRow, {
-				label: "Guest link",
-				value: props.created.guestUrl,
-			}),
-			/* @__PURE__ */ createVNode("p", {
-				className: "panel-hint",
-				children: [
-					"Share both values with guests.",
-					canOpen ? " Open the meeting when you are ready to admit them." : "",
-				],
-			}),
+			canInvite
+				? /* @__PURE__ */ createVNode(Fragment, {
+						children: [
+							props.created.joinCode !== null
+								? /* @__PURE__ */ createVNode(CopyRow, {
+										label: "Join code",
+										value: props.created.joinCode,
+									})
+								: null,
+							/* @__PURE__ */ createVNode(CopyRow, {
+								label: "Guest link",
+								value: props.created.guestUrl,
+							}),
+							/* @__PURE__ */ createVNode("p", {
+								className: "panel-hint",
+								children: [
+									props.created.meeting.admissionMode === "token"
+										? "Share the guest link and join code with guests."
+										: props.created.meeting.admissionMode === "approval"
+											? "Share the guest link. A host must approve each guest in the room."
+											: "Anyone with this guest link can join.",
+									canOpen ? " Open the meeting when you are ready to admit guests." : "",
+									" You can show the invite again from the meeting card.",
+								],
+							}),
+						],
+					})
+				: /* @__PURE__ */ createVNode("p", {
+						className: "panel-hint",
+						children: "This meeting no longer accepts guests.",
+					}),
 			error !== null
 				? /* @__PURE__ */ createVNode("p", {
 						ref: errorRef,
@@ -7266,7 +7340,12 @@ function CreatedMeetingPanel(props) {
 						className: "panel-hint",
 						role: "status",
 						tabIndex: -1,
-						children: "The meeting is open. Guests can join it with the code above.",
+						children:
+							props.created.meeting.admissionMode === "approval"
+								? "The meeting is open. Guests can ask to join. Approve them in the host room."
+								: props.created.meeting.admissionMode === "token"
+									? "The meeting is open. Guests can join it with the code above."
+									: "The meeting is open. Anyone with the guest link can join.",
 					})
 				: null,
 			/* @__PURE__ */ createVNode("div", {
@@ -7308,11 +7387,15 @@ function MeetingRow(props) {
 	const deleteButtonRef = useRef(null);
 	const confirmDescriptionRef = useRef(null);
 	const roomLinkNoticeRef = useRef(null);
+	const inviteNoticeRef = useRef(null);
 	const roomLinkPressedRef = useRef(false);
+	const invitePressedRef = useRef(false);
 	const [busy, setBusy] = useState(null);
 	const [error, setError] = useState(null);
 	const [confirmingDelete, setConfirmingDelete] = useState(false);
 	const [roomUrl, setRoomUrl] = useState(null);
+	const [invite, setInvite] = useState(null);
+	const canInvite = meeting.status === "created" || meeting.status === "open";
 	useEffect(() => {
 		if (confirmingDelete) confirmDescriptionRef.current?.focus();
 	}, [confirmingDelete]);
@@ -7325,8 +7408,16 @@ function MeetingRow(props) {
 		if (!confirmingDelete) roomLinkNoticeRef.current?.focus();
 	}, [roomUrl, confirmingDelete]);
 	useEffect(() => {
+		if (invite === null || !invitePressedRef.current) return;
+		invitePressedRef.current = false;
+		if (!confirmingDelete) inviteNoticeRef.current?.focus();
+	}, [invite, confirmingDelete]);
+	useEffect(() => {
 		if (meeting.status !== "open") setRoomUrl(null);
 	}, [meeting.status]);
+	useEffect(() => {
+		if (!canInvite && invite !== null) setInvite(null);
+	}, [canInvite, invite]);
 	useEffect(() => {
 		if (focusTitleMeetingId !== meeting.id) return;
 		onTitleFocused();
@@ -7400,6 +7491,19 @@ function MeetingRow(props) {
 			/* @__PURE__ */ createVNode("dl", {
 				className: "meeting-facts",
 				children: [
+					/* @__PURE__ */ createVNode("div", {
+						children: [
+							/* @__PURE__ */ createVNode("dt", { children: "Guest access" }),
+							/* @__PURE__ */ createVNode("dd", {
+								children:
+									meeting.admissionMode === "token"
+										? "Token required"
+										: meeting.admissionMode === "approval"
+											? "Host approval"
+											: "Anyone with the link",
+							}),
+						],
+					}),
 					meeting.openedAt !== null
 						? /* @__PURE__ */ createVNode("div", {
 								children: [
@@ -7492,19 +7596,35 @@ function MeetingRow(props) {
 								"Council could not start the recording, so this meeting saves no files. The room stays up for the people already in it, and nobody else can join.",
 						})
 					: null,
-			meeting.status === "created" || meeting.status === "open"
+			canInvite && invite !== null
 				? /* @__PURE__ */ createVNode("div", {
 						className: "meeting-guest",
 						children: [
+							/* @__PURE__ */ createVNode("p", {
+								ref: inviteNoticeRef,
+								className: "panel-hint",
+								role: "status",
+								tabIndex: -1,
+								children:
+									meeting.admissionMode === "token"
+										? invite.joinCode === null
+											? "This older meeting's join code cannot be recovered. Use the code you saved when you created it."
+											: "Share the guest link and join code with guests."
+										: meeting.admissionMode === "approval"
+											? "Share the guest link. A host must approve each guest in the room."
+											: "Anyone with this guest link can join.",
+							}),
+							invite.joinCode !== null
+								? /* @__PURE__ */ createVNode(CopyRow, {
+										label: "Join code",
+										value: invite.joinCode,
+										subject: meeting.title,
+									})
+								: null,
 							/* @__PURE__ */ createVNode(CopyRow, {
 								label: "Guest link",
-								value: `${COUNCIL_SERVICE_ORIGIN}/room?m=${meeting.id}`,
+								value: invite.guestUrl,
 								subject: meeting.title,
-							}),
-							/* @__PURE__ */ createVNode("p", {
-								className: "panel-hint",
-								children:
-									"Guests also need the join code. Council showed it once when this meeting was created and cannot show it again. Create a new meeting to get a new code.",
 							}),
 						],
 					})
@@ -7512,6 +7632,28 @@ function MeetingRow(props) {
 			/* @__PURE__ */ createVNode("div", {
 				className: "meeting-actions",
 				children: [
+					canInvite
+						? /* @__PURE__ */ createVNode("button", {
+								type: "button",
+								className: "button button-quiet",
+								"aria-label": `${invite === null ? "Show" : "Hide"} invite ${meeting.title}`,
+								"aria-expanded": invite !== null,
+								"aria-busy": busy === "invite",
+								onClick: (event) => {
+									if (invite !== null) {
+										setInvite(null);
+										return;
+									}
+									const pressed = event.currentTarget;
+									run("invite", async () => {
+										const result = await api.get_invite(meeting.id);
+										invitePressedRef.current = document.activeElement === pressed;
+										setInvite(result);
+									});
+								},
+								children: busy === "invite" ? "Getting invite…" : invite === null ? "Show invite" : "Hide invite",
+							})
+						: null,
 					meeting.status === "created"
 						? /* @__PURE__ */ createVNode("button", {
 								type: "button",

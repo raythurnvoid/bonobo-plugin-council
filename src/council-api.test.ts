@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { COUNCIL_SERVICE_ORIGIN, create_council_api } from "./council-api";
+import { meeting } from "./meeting-fixture";
 
 function json_response(status: number, body: unknown) {
 	return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
@@ -31,6 +32,51 @@ describe("create_council_api", () => {
 		expect(init.method).toBe("POST");
 		expect((init.headers as Record<string, string>).Authorization).toBe("Bearer plu_first");
 		expect(init.body).toBe("{}");
+	});
+
+	test.each(["token", "approval", "link"] as const)(
+		"create sends %s guest access and accepts its invite",
+		async (admissionMode) => {
+			const joinCode = admissionMode === "token" ? "invite-code" : null;
+			const fetchMock = vi.fn(async () =>
+				json_response(200, {
+					meeting: meeting("m1", "Standup", "created", { admissionMode }),
+					joinCode,
+					guestUrl: "https://council.example.com/room?m=m1",
+				}),
+			);
+			vi.stubGlobal("fetch", fetchMock);
+			const api = create_council_api(make_client(["plu_first"]));
+
+			await expect(api.create_meeting("Standup", admissionMode)).resolves.toMatchObject({
+				meeting: { admissionMode },
+				joinCode,
+			});
+			const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+			expect(init.body).toBe(JSON.stringify({ title: "Standup", admissionMode }));
+		},
+	);
+
+	test.each(["saved-code", null])("invite returns a code or an explicit null (%s)", async (joinCode) => {
+		const invite = { joinCode, guestUrl: "https://council.example.com/room?m=m1" };
+		const fetchMock = vi.fn(async () => json_response(200, invite));
+		vi.stubGlobal("fetch", fetchMock);
+		const api = create_council_api(make_client(["plu_first"]));
+
+		await expect(api.get_invite("m1")).resolves.toEqual(invite);
+		const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+		expect(url).toBe(`${COUNCIL_SERVICE_ORIGIN}/api/meetings/invite`);
+		expect(init.body).toBe(JSON.stringify({ meetingId: "m1" }));
+	});
+
+	test("invite refuses a missing code field instead of treating it as a link-only room", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => json_response(200, { guestUrl: "https://council.example.com/room?m=m1" })),
+		);
+		await expect(create_council_api(make_client(["plu_first"])).get_invite("m1")).rejects.toThrow(
+			"Unexpected response from the Council service (invite)",
+		);
 	});
 
 	test("a 401 refreshes the token once and retries", async () => {
@@ -73,12 +119,12 @@ describe("create_council_api", () => {
 		expect((failure as Error & { status: number }).status).toBe(429);
 	});
 
-	test("create returns the one-time join code and guest link", async () => {
+	test("create returns the join code and guest link", async () => {
 		vi.stubGlobal(
 			"fetch",
 			vi.fn(async () =>
 				json_response(200, {
-					meeting: { id: "m1", title: "Standup", status: "created", artifacts: [] },
+					meeting: { id: "m1", title: "Standup", status: "created", admissionMode: "token", artifacts: [] },
 					joinCode: "one-time-code",
 					guestUrl: "https://council.example.com/room?m=m1",
 				}),
@@ -92,6 +138,7 @@ describe("create_council_api", () => {
 		expect(created.meeting).toEqual({
 			id: "m1",
 			title: "Standup",
+			admissionMode: "token",
 			status: "created",
 			createdAt: null,
 			openedAt: null,
@@ -116,6 +163,7 @@ describe("create_council_api", () => {
 							id: "m1",
 							title: "Standup",
 							status: "ready",
+							admissionMode: "approval",
 							createdAt: 100,
 							openedAt: 200,
 							closedAt: 300,
@@ -136,6 +184,7 @@ describe("create_council_api", () => {
 
 		const [listed] = await api.list_meetings();
 		expect(listed).toMatchObject({
+			admissionMode: "approval",
 			openedAt: 200,
 			closedAt: 300,
 			participantCount: 4,
@@ -174,7 +223,9 @@ describe("create_council_api", () => {
 			"fetch",
 			vi.fn(async (url: string) => {
 				if (url.endsWith("/open")) {
-					return json_response(200, { meeting: { id: "m1", title: "Standup", status: "open", artifacts: [] } });
+					return json_response(200, {
+						meeting: { id: "m1", title: "Standup", status: "open", admissionMode: "token", artifacts: [] },
+					});
 				}
 				return json_response(200, { status: url.endsWith("/close") ? "processing" : "deleting" });
 			}),
@@ -212,7 +263,11 @@ describe("create_council_api", () => {
 
 		vi.stubGlobal(
 			"fetch",
-			vi.fn(async () => json_response(200, { meeting: { id: "m1", title: "Standup", status: "open", artifacts: [] } })),
+			vi.fn(async () =>
+				json_response(200, {
+					meeting: { id: "m1", title: "Standup", status: "open", admissionMode: "token", artifacts: [] },
+				}),
+			),
 		);
 		await expect(create_council_api(make_client(["plu_first"])).open_meeting("m1")).resolves.toMatchObject({
 			id: "m1",
@@ -230,6 +285,7 @@ describe("create_council_api", () => {
 							id: "m1",
 							title: "Standup",
 							status: "ready",
+							admissionMode: "token",
 							artifacts: [
 								{ kind: "track_audio", name: "standup.webm", fileNodeId: "node1" },
 								{ kind: "chapter_markers", name: "chapters.json" },
@@ -264,6 +320,7 @@ describe("create_council_api", () => {
 							id: "m1",
 							title: "Standup",
 							status: "ready",
+							admissionMode: "token",
 							artifacts: [{ kind: "summary_markdown", fileNodeId: "node1" }],
 						},
 					],
@@ -286,6 +343,7 @@ describe("create_council_api", () => {
 							id: "m1",
 							title: "Standup",
 							status: "ready",
+							admissionMode: "token",
 							artifacts: [{ kind: "transcript_markdown", path: "/Meetings/standup.md" }],
 						},
 					],
@@ -310,6 +368,7 @@ describe("create_council_api", () => {
 							id: "m1",
 							title: "Standup",
 							status: "failed",
+							admissionMode: "token",
 							failureReason: "Provider session ended without a recording",
 							artifacts: [],
 						},
@@ -334,6 +393,7 @@ describe("create_council_api", () => {
 							id: "m1",
 							title: "Standup",
 							status: "ready",
+							admissionMode: "token",
 							recordingWarning:
 								"Council could not store the video recording. The file was larger than the workspace can accept. The audio file was still saved.",
 							artifacts: [{ kind: "track_audio", name: "recording-audio.m4a" }],

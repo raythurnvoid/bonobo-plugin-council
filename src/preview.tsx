@@ -1,11 +1,16 @@
 import type { BonoboClient } from "bonobo-plugin-sdk/frontend";
 import { createRoot } from "react-dom/client";
 import { App } from "./app";
+import type { CouncilAdmissionMode } from "./council-api";
 import { FIXTURE_NOW, meeting } from "./meeting-fixture";
 import "./council.css";
 
 const allMeetings = [
+	meeting("project-kickoff", "Project kickoff", "created"),
 	meeting("weekly-planning", "Weekly planning", "open"),
+	meeting("guest-approval", "Guest interviews", "open", { admissionMode: "approval" }),
+	meeting("open-link", "Community call", "open", { admissionMode: "link" }),
+	meeting("old-token", "Older token meeting", "open"),
 	// The room is still live for the people inside it, so this card keeps its deadline.
 	meeting("recording-lost", "Vendor call", "recording_start_unknown", { deadlineAt: FIXTURE_NOW + 1_200_000 }),
 	meeting("customer-review", "Customer review", "processing"),
@@ -47,15 +52,16 @@ let meetings =
 		: previewState === "all" || previewState === "stale"
 			? allMeetings
 			: [
-					// `?state=` picks a fixture by meeting status. A value that matches none used to fall
+					// `?state=` picks a fixture by status or guest access. A value that matches none used to fall
 					// back to a plausible "Project kickoff" card, so the preview looked fine and the reader
 					// never learned the value missed. Name the value in the card instead. Say only "no
 					// fixture": several real statuses have no fixture here either, so the value is not
 					// necessarily wrong.
-					allMeetings.find((item) => item.status === previewState) ??
+					allMeetings.find((item) => item.status === previewState || item.admissionMode === previewState) ??
 						meeting("no-preview-fixture", `Preview has no fixture for ?state=${previewState}`, "created"),
 				];
 let listAttempts = 0;
+let createdCount = 0;
 
 function response(status: number, body: unknown) {
 	return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
@@ -64,7 +70,11 @@ function response(status: number, body: unknown) {
 window.fetch = async (input, init) => {
 	const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
 	const path = new URL(url).pathname;
-	const body = JSON.parse(String(init?.body ?? "{}")) as { meetingId?: string; title?: string };
+	const body = JSON.parse(String(init?.body ?? "{}")) as {
+		meetingId?: string;
+		title?: string;
+		admissionMode?: CouncilAdmissionMode;
+	};
 	if (path === "/api/meetings/list") {
 		listAttempts += 1;
 		if (previewState === "loading") {
@@ -78,17 +88,26 @@ window.fetch = async (input, init) => {
 			: response(200, { meetings });
 	}
 	if (path === "/api/meetings/create") {
-		const created = meeting("new-meeting", body.title ?? "New meeting", "created");
+		const created = meeting(`new-meeting-${++createdCount}`, body.title ?? "New meeting", "created", {
+			admissionMode: body.admissionMode ?? "token",
+		});
 		meetings = [created, ...meetings];
 		return response(200, {
 			meeting: created,
-			joinCode: "council-demo-4821",
-			guestUrl: "https://council.example.test/room?m=new-meeting",
+			joinCode: created.admissionMode === "token" ? "council-demo-4821" : null,
+			guestUrl: `https://council.example.test/room?m=${created.id}${created.admissionMode === "token" ? "" : `&access=${created.admissionMode}`}`,
 		});
 	}
 	const index = meetings.findIndex((item) => item.id === body.meetingId);
 	if (index < 0) {
 		return response(404, { message: "Meeting not found" });
+	}
+	if (path === "/api/meetings/invite") {
+		const current = meetings[index]!;
+		return response(200, {
+			joinCode: current.admissionMode === "token" && current.id !== "old-token" ? "council-demo-4821" : null,
+			guestUrl: `https://council.example.test/room?m=${encodeURIComponent(current.id)}${current.admissionMode === "token" ? "" : `&access=${current.admissionMode}`}`,
+		});
 	}
 	// Open is the one mutation that answers the whole meeting instead of a bare status. Match the
 	// real route (`meeting_view` in the Council service), or `open_meeting` refuses the answer and

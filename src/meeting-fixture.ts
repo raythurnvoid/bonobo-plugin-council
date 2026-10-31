@@ -41,6 +41,7 @@ export function meeting(
 	return {
 		id,
 		title,
+		admissionMode: "token",
 		status,
 		createdAt: FIXTURE_NOW - 3_600_000,
 		openedAt: status === "created" ? null : FIXTURE_NOW - 3_000_000,

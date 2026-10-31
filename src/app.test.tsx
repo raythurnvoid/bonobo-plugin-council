@@ -590,7 +590,7 @@ test("a successful close updates the card even when its refresh fails", async ()
 	expect(screen.queryByRole("button", { name: "Close meeting Weekly sync" })).toBeNull();
 });
 
-test("creating a meeting shows the one-time join code with the cannot-retrieve warning", async () => {
+test("creating a token meeting sends its access mode and shows the invite", async () => {
 	const calls = stub_council({
 		"/api/meetings/list": () => ({ body: { meetings: [] } }),
 		"/api/meetings/create": () => ({
@@ -609,14 +609,17 @@ test("creating a meeting shows the one-time join code with the cannot-retrieve w
 
 	const invitePanel = (await screen.findByDisplayValue("code-shown-once")).closest("section")!;
 	expect(screen.getByDisplayValue("https://council.example.com/room?m=m9")).toBeTruthy();
-	// Read the warning inside the panel. The new meeting's card says "cannot show it again" too.
-	expect(within(invitePanel).getByText(/cannot show it again/)).toBeTruthy();
+	expect(within(invitePanel).getByText(/You can show the invite again/)).toBeTruthy();
 	expect(
-		calls.some((call) => call.path === "/api/meetings/create" && JSON.stringify(call.body) === '{"title":"Planning"}'),
+		calls.some(
+			(call) =>
+				call.path === "/api/meetings/create" &&
+				JSON.stringify(call.body) === '{"title":"Planning","admissionMode":"token"}',
+		),
 	).toBe(true);
 });
 
-test("the one-time invite follows created to open before offering the host link", async () => {
+test("the invite follows created to open before offering the host link", async () => {
 	let opened = false;
 	const calls = stub_council({
 		"/api/meetings/list": () => ({
@@ -657,7 +660,42 @@ test("the one-time invite follows created to open before offering the host link"
 	expect(document.activeElement).not.toBe(screen.getByRole("button", { name: "Done, I saved the invite" }));
 });
 
-test("opening the meeting keeps the one-time invite until the member dismisses it", async () => {
+test.each(["approval", "link"] as const)(
+	"the create form sends %s access and shows an invite without a code",
+	async (admissionMode) => {
+		const calls = stub_council({
+			"/api/meetings/list": () => ({ body: { meetings: [] } }),
+			"/api/meetings/create": () => ({
+				body: {
+					meeting: meeting("m9", "Planning", "created", { admissionMode }),
+					joinCode: null,
+					guestUrl: "https://council.example.com/room?m=m9",
+				},
+			}),
+		});
+		render(<App client={make_client()} />);
+		const select = screen.getByRole("combobox", { name: "Guest access" }) as HTMLSelectElement;
+		expect(select.value).toBe("token");
+		select.value = admissionMode;
+		// The test helper rewrites change to input, but a select listens for change.
+		fireEvent(select, new Event("change", { bubbles: true }));
+		fireEvent.input(screen.getByLabelText("Meeting title"), { target: { value: "Planning" } });
+		fireEvent.submit(document.querySelector("form.create-form")!);
+		const invitePanel = (await screen.findByDisplayValue("https://council.example.com/room?m=m9")).closest("section")!;
+		expect(calls.find((call) => call.path === "/api/meetings/create")?.body).toEqual({
+			title: "Planning",
+			admissionMode,
+		});
+		expect(within(invitePanel).queryByLabelText("Join code")).toBeNull();
+		expect(
+			within(invitePanel).getByText(
+				admissionMode === "approval" ? /A host must approve each guest/ : /Anyone with this guest link can join/,
+			),
+		).toBeTruthy();
+	},
+);
+
+test("opening the meeting keeps the invite until the member dismisses it", async () => {
 	let releaseOpen!: () => void;
 	const openGate = new Promise<void>((resolve) => {
 		releaseOpen = resolve;
@@ -708,8 +746,7 @@ test("opening the meeting keeps the one-time invite until the member dismisses i
 		expect(within(invitePanel).queryByRole("button", { name: "Open meeting Planning" })).toBeNull();
 	});
 
-	// The service never stores the plaintext join code, so this panel is its only copy. Opening the
-	// meeting must not take it away: the host would have no invite left and no way to get one.
+	// Opening must leave the invite visible so the member can finish copying it.
 	expect(screen.getByDisplayValue("code-shown-once")).toBeTruthy();
 	expect(screen.getByDisplayValue("https://council.example.com/room?m=m9")).toBeTruthy();
 	expect(screen.getByText("The meeting is open. Guests can join it with the code above.")).toBeTruthy();
@@ -771,8 +808,7 @@ test("opening the meeting from its card takes the invite panel's second button a
 		);
 	});
 
-	// Only the button. The service stores no plaintext join code, so this panel is its only copy, and
-	// a member who has not written it down yet cannot invite anybody afterwards.
+	// Only the button leaves. The member can still copy the invite from this panel.
 	expect(invitePanel.isConnected).toBe(true);
 	expect(screen.getByDisplayValue("code-shown-once")).toBeTruthy();
 	expect(screen.getByRole("button", { name: "Done, I saved the invite" })).toBeTruthy();
@@ -832,6 +868,10 @@ test("deleting the meeting never leaves the invite panel calling it open or offe
 	// reading of the meeting while it is up: it must not tell them guests can still join.
 	await screen.findByText("Deleting");
 	expect(within(invitePanel).queryByText("The meeting is open. Guests can join it with the code above.")).toBeNull();
+	expect(within(invitePanel).queryByDisplayValue("code-shown-once")).toBeNull();
+	expect(within(invitePanel).queryByDisplayValue("https://council.example.com/room?m=m9")).toBeNull();
+	expect(within(invitePanel).getByText("This meeting no longer accepts guests.")).toBeTruthy();
+	expect(within(invitePanel).queryByText(/Share the guest link|You can show the invite again/)).toBeNull();
 
 	// The purge finishes and the meeting leaves the list. An Open button here would point the member at
 	// a meeting the service has already destroyed, and pressing it only produces a service error.
@@ -844,10 +884,64 @@ test("deleting the meeting never leaves the invite panel calling it open or offe
 	);
 	expect(within(invitePanel).queryByRole("button", { name: "Open meeting Planning" })).toBeNull();
 
-	// Still only the two status sentences move. The panel holds the only copy of the join code.
+	// The panel stays until dismissed, but the deleted meeting has no usable invite.
 	expect(invitePanel.isConnected).toBe(true);
-	expect(screen.getByDisplayValue("code-shown-once")).toBeTruthy();
+	expect(within(invitePanel).queryByDisplayValue("code-shown-once")).toBeNull();
+	expect(within(invitePanel).queryByDisplayValue("https://council.example.com/room?m=m9")).toBeNull();
+	expect(within(invitePanel).getByText("This meeting no longer accepts guests.")).toBeTruthy();
+	fireEvent.click(within(invitePanel).getByRole("button", { name: "Done, I saved the invite" }));
+	expect(screen.getByLabelText("Meeting title")).toBeTruthy();
 }, 15000);
+
+test.each([
+	["token", "expired"],
+	["approval", "closed"],
+	["link", "closed"],
+] as const)(
+	"the %s invite stops offering guest access when the meeting is %s",
+	async (admissionMode, status) => {
+		let created = false;
+		let settled = false;
+		stub_council({
+			"/api/meetings/list": () => ({
+				body: {
+					meetings: created ? [meeting("m9", "Planning", settled ? status : "created", { admissionMode })] : [],
+				},
+			}),
+			"/api/meetings/create": () => {
+				created = true;
+				return {
+					body: {
+						meeting: meeting("m9", "Planning", "created", { admissionMode }),
+						joinCode: admissionMode === "token" ? "code-shown-once" : null,
+						guestUrl: "https://council.example.com/room?m=m9",
+					},
+				};
+			},
+		});
+		render(<App client={make_client()} />);
+		await screen.findByText("No meetings yet. Create one to get a guest invite.");
+		const select = screen.getByRole("combobox", { name: "Guest access" }) as HTMLSelectElement;
+		select.value = admissionMode;
+		fireEvent(select, new Event("change", { bubbles: true }));
+		fireEvent.input(screen.getByLabelText("Meeting title"), { target: { value: "Planning" } });
+		fireEvent.submit(document.querySelector("form.create-form")!);
+		const invitePanel = (await screen.findByDisplayValue("https://council.example.com/room?m=m9")).closest("section")!;
+
+		settled = true;
+		await screen.findByText(status === "expired" ? "Expired" : "Closed", {}, { timeout: 7000 });
+		expect(within(invitePanel).queryByLabelText("Guest link")).toBeNull();
+		expect(within(invitePanel).queryByLabelText("Join code")).toBeNull();
+		expect(
+			within(invitePanel).queryByText(/Share the guest link|Anyone with.*can join|You can show the invite again/),
+		).toBeNull();
+		expect(within(invitePanel).getByText("This meeting no longer accepts guests.")).toBeTruthy();
+		expect(within(invitePanel).queryByRole("button", { name: "Open meeting Planning" })).toBeNull();
+		fireEvent.click(within(invitePanel).getByRole("button", { name: "Done, I saved the invite" }));
+		expect(screen.getByLabelText("Meeting title")).toBeTruthy();
+	},
+	10000,
+);
 
 test("the invite panel stays usable while the open runs and refuses a second press", async () => {
 	let releaseOpen!: () => void;
@@ -888,7 +982,7 @@ test("the invite panel stays usable while the open runs and refuses a second pre
 	// A real browser blurs a focused control the moment it becomes disabled, and nothing puts that
 	// focus back. happy-dom does not reproduce the blur, so assert the attributes that cause it: for
 	// the whole round-trip both controls must stay usable, or the member is stranded on the page body
-	// holding the only copy of the join code.
+	// while they are copying the invite.
 	await waitFor(() => {
 		expect(pending.textContent).toBe("Opening…");
 	});
@@ -907,7 +1001,7 @@ test("the invite panel stays usable while the open runs and refuses a second pre
 	expect(await screen.findByText("The meeting is open. Guests can join it with the code above.")).toBeTruthy();
 });
 
-test("dismissing the one-time invite returns focus to New meeting, and that landing is visible", async () => {
+test("dismissing the invite returns focus to New meeting, and that landing is visible", async () => {
 	stub_council({
 		"/api/meetings/list": () => ({ body: { meetings: [] } }),
 		"/api/meetings/create": () => ({
@@ -1475,24 +1569,97 @@ test("a host room link that arrives during a delete confirmation leaves that war
 	});
 });
 
-test("a card that guests can still join carries the guest link and says the code cannot come back", async () => {
+test.each([false, true])("a delayed invite respects whether focus moved away: %s", async (movedFocus) => {
+	let releaseInvite!: () => void;
+	const inviteGate = new Promise<void>((resolve) => {
+		releaseInvite = resolve;
+	});
+	const guestUrl = "https://council.example.com/room?m=m1";
 	stub_council({
-		"/api/meetings/list": () => ({
-			body: { meetings: [meeting("m1", "Weekly sync", "open"), meeting("m2", "Retro", "ready")] },
-		}),
+		"/api/meetings/list": () => ({ body: { meetings: [meeting("m1", "Weekly sync", "open")] } }),
+		"/api/meetings/invite": async () => {
+			await inviteGate;
+			return { body: { joinCode: "recovered-code", guestUrl } };
+		},
 	});
 	render(<App client={make_client()} />);
-	const openRow = (await screen.findByRole("heading", { level: 4, name: "Weekly sync" })).closest("li")!;
+	const button = await screen.findByRole("button", { name: "Show invite Weekly sync" });
+	button.focus();
+	fireEvent.click(button);
+	await waitFor(() => expect(button.getAttribute("aria-busy")).toBe("true"));
+	const title = screen.getByLabelText("Meeting title");
+	if (movedFocus) {
+		title.focus();
+	}
 
-	// The guest link is only the meeting id, so the card can rebuild it at any time. The join code
-	// cannot be rebuilt: the service stores only its hash and has no route that issues a new one. So
-	// once the one-time invite panel is dismissed, this card is the only thing that can say so.
-	expect(within(openRow).getByDisplayValue(`${COUNCIL_SERVICE_ORIGIN}/room?m=m1`)).toBeTruthy();
-	expect(within(openRow).getByText(/cannot show it again\. Create a new meeting to get a new code\./)).toBeTruthy();
+	releaseInvite();
+	expect(await screen.findByDisplayValue(guestUrl)).toBeTruthy();
+	await waitFor(() => expect(button.getAttribute("aria-busy")).toBe("false"));
+	const notice = screen.getByText("Share the guest link and join code with guests.");
+	expect(notice.getAttribute("role")).toBe("status");
+	expect(document.activeElement).toBe(movedFocus ? title : notice);
+});
 
-	// A finished meeting admits nobody, so it offers no invite.
-	const readyRow = screen.getByRole("heading", { level: 4, name: "Retro" }).closest("li")!;
-	expect(within(readyRow).queryByDisplayValue(`${COUNCIL_SERVICE_ORIGIN}/room?m=m2`)).toBeNull();
+test.each(["token", "approval", "link"] as const)(
+	"a listed %s room loads its invite only on request, including after reload",
+	async (admissionMode) => {
+		const joinCode = admissionMode === "token" ? "recovered-code" : null;
+		const guestUrl = "https://council.example.com/room?m=m1";
+		const calls = stub_council({
+			"/api/meetings/list": () => ({
+				body: { meetings: [meeting("m1", "Weekly sync", "open", { admissionMode }), meeting("m2", "Retro", "ready")] },
+			}),
+			"/api/meetings/invite": () => ({ body: { joinCode, guestUrl } }),
+		});
+		const view = render(<App client={make_client()} />);
+		const openRow = (await screen.findByRole("heading", { level: 4, name: "Weekly sync" })).closest("li")!;
+
+		expect(calls.filter((call) => call.path === "/api/meetings/invite")).toHaveLength(0);
+		expect(within(openRow).queryByLabelText(/Guest link/)).toBeNull();
+		fireEvent.click(within(openRow).getByRole("button", { name: "Show invite Weekly sync" }));
+		expect(await within(openRow).findByDisplayValue(guestUrl)).toBeTruthy();
+		expect(
+			(within(openRow).queryByLabelText("Join code for Weekly sync") as HTMLInputElement | null)?.value ?? null,
+		).toBe(joinCode);
+		expect(calls.filter((call) => call.path === "/api/meetings/invite")).toEqual([
+			{ path: "/api/meetings/invite", body: { meetingId: "m1" } },
+		]);
+
+		if (admissionMode === "token") {
+			// A normal poll must never refetch a revealed secret.
+			await waitFor(
+				() => expect(calls.filter((call) => call.path === "/api/meetings/list").length).toBeGreaterThan(1),
+				{ timeout: 10000 },
+			);
+			expect(calls.filter((call) => call.path === "/api/meetings/invite")).toHaveLength(1);
+		}
+		fireEvent.click(within(openRow).getByRole("button", { name: "Hide invite Weekly sync" }));
+		expect(within(openRow).queryByDisplayValue(guestUrl)).toBeNull();
+		view.unmount();
+		render(<App client={make_client()} />);
+		const showInvite = await screen.findByRole("button", { name: "Show invite Weekly sync" });
+		expect(screen.queryByDisplayValue(guestUrl)).toBeNull();
+		expect(calls.filter((call) => call.path === "/api/meetings/invite")).toHaveLength(1);
+		fireEvent.click(showInvite);
+		expect(await screen.findByDisplayValue(guestUrl)).toBeTruthy();
+		expect(calls.filter((call) => call.path === "/api/meetings/invite")).toHaveLength(2);
+
+		// A finished meeting admits nobody, so it offers no invite.
+		const readyRow = screen.getByRole("heading", { level: 4, name: "Retro" }).closest("li")!;
+		expect(within(readyRow).queryByRole("button", { name: /Show invite/ })).toBeNull();
+	},
+);
+
+test("an older token room keeps its guest link and explains an unrecoverable code", async () => {
+	stub_council({
+		"/api/meetings/list": () => ({ body: { meetings: [meeting("m1", "Old meeting", "created")] } }),
+		"/api/meetings/invite": () => ({ body: { joinCode: null, guestUrl: "https://council.example.com/room?m=m1" } }),
+	});
+	render(<App client={make_client()} />);
+	fireEvent.click(await screen.findByRole("button", { name: "Show invite Old meeting" }));
+	expect(await screen.findByDisplayValue("https://council.example.com/room?m=m1")).toBeTruthy();
+	expect(screen.getByText(/Use the code you saved when you created it/)).toBeTruthy();
+	expect(screen.queryByLabelText("Join code for Old meeting")).toBeNull();
 });
 
 test("a polled close removes a stale host room link", async () => {
@@ -1687,14 +1854,9 @@ test("each row action names its own meeting", async () => {
 	expect(screen.getAllByRole("button", { name: "Delete Retro" })).toHaveLength(1);
 	expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
 
-	// Both cards can still admit guests, so both carry a guest-link copy row with the same visible
-	// words. The accessible names carry the meeting title, or a screen-reader member cannot tell
-	// whose link a copy would take.
-	expect(screen.getAllByRole("button", { name: "Copy guest link for Weekly sync" })).toHaveLength(1);
-	expect(screen.getAllByRole("button", { name: "Copy guest link for Retro" })).toHaveLength(1);
-	expect(screen.getAllByRole("textbox", { name: "Guest link for Weekly sync" })).toHaveLength(1);
-	expect(screen.getAllByRole("textbox", { name: "Guest link for Retro" })).toHaveLength(1);
-	expect(screen.queryByRole("button", { name: "Copy guest link" })).toBeNull();
+	// Invites load on demand, so each action names its meeting before the copy fields exist.
+	expect(screen.getAllByRole("button", { name: "Show invite Weekly sync" })).toHaveLength(1);
+	expect(screen.getAllByRole("button", { name: "Show invite Retro" })).toHaveLength(1);
 
 	fireEvent.click(screen.getByRole("button", { name: "Delete Weekly sync" }));
 	expect(screen.getByText(/^Delete Weekly sync\?/)).toBeTruthy();
@@ -1940,8 +2102,8 @@ test("a refused clipboard still copies through the old command", async () => {
 			},
 		}),
 	});
-	// A host frame without the `clipboard-write` grant rejects every async clipboard call. The join
-	// code cannot be shown again, so the row must still copy it.
+	// A host frame without the `clipboard-write` grant rejects async clipboard calls. The member
+	// still needs to copy the invite into another tab.
 	Object.defineProperty(navigator, "clipboard", {
 		configurable: true,
 		value: { writeText: () => Promise.reject(new Error("NotAllowedError")) },

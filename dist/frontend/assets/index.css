@@ -93,7 +93,8 @@ body {
 
 .button:focus-visible,
 .copy-row-input:focus-visible,
-.field input:focus-visible {
+.field input:focus-visible,
+.field select:focus-visible {
 	outline: 3px solid #8fb4ff;
 	outline-offset: 3px;
 }
@@ -265,6 +266,7 @@ body {
 }
 
 .created-panel h2 {
+	margin-bottom: 18px;
 	font-size: 20px;
 }
 
@@ -310,6 +312,7 @@ body {
    3.46:1 against the create panel, 3.55:1 against the darker blocks inside a meeting card, and
    3.66:1 against the fill on the inside edge. Do not darken it again. */
 .field input,
+.field select,
 .copy-row-input {
 	width: 100%;
 	min-height: 46px;
@@ -319,6 +322,10 @@ body {
 	background: #0c0f15;
 	color: #f3f5f8;
 	font: inherit;
+}
+
+.field select {
+	font-size: 16px;
 }
 
 .field:has(.field-help.is-error) input {
@@ -340,16 +347,6 @@ body {
 
 .form-error {
 	margin: 0 0 14px;
-	font-weight: 700;
-}
-
-.created-panel-warning {
-	margin: 14px 0 18px;
-	padding: 11px 13px;
-	border: 1px solid #776436;
-	border-radius: 10px;
-	background: #211d13;
-	color: #ffe29e;
 	font-weight: 700;
 }
 

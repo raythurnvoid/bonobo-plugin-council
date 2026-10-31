@@ -1,12 +1,13 @@
 import type { BonoboClient } from "bonobo-plugin-sdk/frontend";
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type FormEvent, type MouseEvent } from "react";
 import {
-	COUNCIL_SERVICE_ORIGIN,
 	create_council_api,
 	get_error_message,
+	type CouncilAdmissionMode,
 	type CouncilApi,
 	type CouncilArtifactKind,
 	type CouncilCreatedMeeting,
+	type CouncilInvite,
 	type CouncilMeeting,
 } from "./council-api";
 
@@ -122,7 +123,7 @@ function CopyRow(props: { label: string; value: string; subject?: string }) {
 
 	// Several cards can carry this row with the same visible words, so a caller that renders it per
 	// meeting passes the meeting title as `subject`. The title joins only the accessible names, and
-	// each name keeps the visible text inside it, as WCAG 2.5.3 asks. The one-time invite panel is
+	// each name keeps the visible text inside it, as WCAG 2.5.3 asks. The created invite panel is
 	// singular, so it passes no subject and its names stay as they are.
 	const subjectSuffix = props.subject === undefined ? "" : ` for ${props.subject}`;
 
@@ -133,7 +134,7 @@ function CopyRow(props: { label: string; value: string; subject?: string }) {
 				// `clipboard-write` is Permissions-Policy gated and a cross-origin frame does not
 				// inherit it. The current host grants it on the plugin iframe, so this call normally
 				// resolves — but that grant belongs to the host, and an older host or a frame that
-				// drops it rejects every call here. These values are shown once, so do not depend on
+				// drops it rejects every call here. Members need to copy these values, so do not depend on
 				// it: select the text and try the old command, which this frame can still run. Only
 				// when that refuses too does the member have to press Ctrl+C by hand.
 				inputRef.current?.select();
@@ -193,11 +194,13 @@ const TITLE_MAX_BYTES = 200;
 function CreateMeetingForm(props: { api: CouncilApi; onCreated: (created: CouncilCreatedMeeting) => void }) {
 	const rootId = `CreateMeetingForm-${useId()}`;
 	const titleId = `${rootId}-title-input`;
+	const admissionModeId = `${rootId}-admission-mode`;
 	const titleHelpId = `${rootId}-title-helper`;
 	const actionErrorId = `${rootId}-action-error`;
 	const titleRef = useRef<HTMLInputElement | null>(null);
 	const actionErrorRef = useRef<HTMLParagraphElement | null>(null);
 	const [title, setTitle] = useState("");
+	const [admissionMode, setAdmissionMode] = useState<CouncilAdmissionMode>("token");
 	const [busy, setBusy] = useState(false);
 	const [fieldError, setFieldError] = useState<string | null>(null);
 	const [actionError, setActionError] = useState<string | null>(null);
@@ -246,7 +249,7 @@ function CreateMeetingForm(props: { api: CouncilApi; onCreated: (created: Counci
 
 		setBusy(true);
 		setActionError(null);
-		props.api.create_meeting(title.trim()).then(
+		props.api.create_meeting(title.trim(), admissionMode).then(
 			(created) => {
 				setBusy(false);
 				setTitle("");
@@ -313,6 +316,21 @@ function CreateMeetingForm(props: { api: CouncilApi; onCreated: (created: Counci
 					</p>
 				) : null}
 			</div>
+			<div className="field">
+				<label htmlFor={admissionModeId}>Guest access</label>
+				<select
+					id={admissionModeId}
+					value={admissionMode}
+					onChange={(event) => {
+						setAdmissionMode(event.currentTarget.value as CouncilAdmissionMode);
+						setActionError(null);
+					}}
+				>
+					<option value="token">Token required</option>
+					<option value="approval">Host approval</option>
+					<option value="link">Anyone with the link</option>
+				</select>
+			</div>
 			{actionError !== null ? (
 				<p ref={actionErrorRef} id={actionErrorId} className="form-error" role="alert" tabIndex={-1}>
 					{actionError}
@@ -328,7 +346,9 @@ function CreateMeetingForm(props: { api: CouncilApi; onCreated: (created: Counci
 	);
 }
 
-/** Keep the guest invite here only, because the service never stores the plaintext join code. */
+/**
+ * Keep the new invite visible while the member opens the meeting.
+ */
 function CreatedMeetingPanel(props: {
 	api: CouncilApi;
 	created: CouncilCreatedMeeting;
@@ -354,12 +374,13 @@ function CreatedMeetingPanel(props: {
 	// Read the status itself, never "anything but created". Deleting the meeting from its card moves
 	// it to `deleting`, and the unopened-meeting deadline moves it to `expired`; neither one opened
 	// anything, and this panel is the member's only reading of the meeting while it is up. A null
-	// status means the meeting has left the list, so say nothing about a meeting that is not there.
+	// status means the meeting has left the list, so it can no longer accept guests.
 	const canOpen = props.status === "created";
 	const isOpen = props.status === "open";
+	const canInvite = canOpen || isOpen;
 
 	// The panel replaces the create form in place, so move focus into it. Otherwise a keyboard member
-	// stays on a button that no longer exists and never reaches the code they can only read once.
+	// stays on a button that no longer exists and never reaches the invite.
 	useEffect(() => {
 		headingRef.current?.focus();
 	}, []);
@@ -371,8 +392,7 @@ function CreatedMeetingPanel(props: {
 	}, [error]);
 
 	// Opening removes the button that was pressed, so send focus to the line that says what happened.
-	// Not to the remaining button: it dismisses this panel, and a held Enter would then throw the join
-	// code away, which is the one thing this panel exists to prevent.
+	// Keep it off the remaining button, so a held Enter does not dismiss the invite.
 	//
 	// Only when the press happened here. A member who opened the meeting from its card is reading the
 	// list, and pulling their focus into this panel would take them away from it.
@@ -407,35 +427,46 @@ function CreatedMeetingPanel(props: {
 
 	return (
 		<section className="created-panel" aria-labelledby={headingId}>
-			<p className="section-kicker">One-time invite</p>
+			<p className="section-kicker">Guest invite</p>
 			<h2 id={headingId} tabIndex={-1} ref={headingRef}>
 				{props.created.meeting.title}
 			</h2>
-			<p className="created-panel-warning">Save the join code now. Council cannot show it again.</p>
-			<CopyRow label="Join code" value={props.created.joinCode} />
-			<CopyRow label="Guest link" value={props.created.guestUrl} />
-			{/* The second sentence tells the member to press the Open button, so it comes and goes with
-			    that button. In every other state there is nothing left to open, and the status line below
-			    already says what happens next. */}
-			<p className="panel-hint">
-				Share both values with guests.{canOpen ? " Open the meeting when you are ready to admit them." : ""}
-			</p>
+			{canInvite ? (
+				<>
+					{props.created.joinCode !== null ? <CopyRow label="Join code" value={props.created.joinCode} /> : null}
+					<CopyRow label="Guest link" value={props.created.guestUrl} />
+					{/* The Open hint follows its button. The invite stays visible after opening. */}
+					<p className="panel-hint">
+						{props.created.meeting.admissionMode === "token"
+							? "Share the guest link and join code with guests."
+							: props.created.meeting.admissionMode === "approval"
+								? "Share the guest link. A host must approve each guest in the room."
+								: "Anyone with this guest link can join."}
+						{canOpen ? " Open the meeting when you are ready to admit guests." : ""}
+						{" You can show the invite again from the meeting card."}
+					</p>
+				</>
+			) : (
+				<p className="panel-hint">This meeting no longer accepts guests.</p>
+			)}
 			{error !== null ? (
 				<p ref={errorRef} className="form-error" role="alert" tabIndex={-1}>
 					{error}
 				</p>
 			) : null}
-			{/* Only `open` really admits a guest holding this code. The service refuses a new join in every
+			{/* Only `open` admits new guests. The service refuses a new join in every
 			    other status, including `recording_start_unknown`, where the call keeps running for the
 			    people already in it. */}
 			{isOpen ? (
 				<p ref={openedNoticeRef} className="panel-hint" role="status" tabIndex={-1}>
-					The meeting is open. Guests can join it with the code above.
+					{props.created.meeting.admissionMode === "approval"
+						? "The meeting is open. Guests can ask to join. Approve them in the host room."
+						: props.created.meeting.admissionMode === "token"
+							? "The meeting is open. Guests can join it with the code above."
+							: "The meeting is open. Anyone with the guest link can join."}
 				</p>
 			) : null}
-			{/* Opening the meeting must not take the panel away with it. The service never stores the
-			    plaintext join code, so this panel is its only copy, and a member who has not written it
-			    down yet cannot invite anybody afterwards. Only "Done, I saved the invite" dismisses it. */}
+			{/* Keep the invite visible after opening so the member can finish copying it. */}
 			<div className="panel-actions">
 				{canOpen ? (
 					// Same rule as the row actions: name the meeting, because the card for this meeting
@@ -494,13 +525,18 @@ function MeetingRow(props: MeetingRow_Props) {
 	const deleteButtonRef = useRef<HTMLButtonElement | null>(null);
 	const confirmDescriptionRef = useRef<HTMLParagraphElement | null>(null);
 	const roomLinkNoticeRef = useRef<HTMLParagraphElement | null>(null);
+	const inviteNoticeRef = useRef<HTMLParagraphElement | null>(null);
 	// Remember only that the press happened here, for the focus move below. A poll that drops the
 	// link is not a press, and it must not move anybody's focus.
 	const roomLinkPressedRef = useRef(false);
+	const invitePressedRef = useRef(false);
 	const [busy, setBusy] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [confirmingDelete, setConfirmingDelete] = useState(false);
 	const [roomUrl, setRoomUrl] = useState<string | null>(null);
+	// Fetch invites only on request. Keep codes out of the polled list and browser storage.
+	const [invite, setInvite] = useState<CouncilInvite | null>(null);
+	const canInvite = meeting.status === "created" || meeting.status === "open";
 
 	// The confirmation opens below the button that opened it, so move focus into it. Otherwise a
 	// screen reader never reaches the warning before the member presses the next thing. Land on the
@@ -538,6 +574,17 @@ function MeetingRow(props: MeetingRow_Props) {
 		}
 	}, [roomUrl, confirmingDelete]);
 
+	useEffect(() => {
+		if (invite === null || !invitePressedRef.current) {
+			return;
+		}
+		// Keep focus on Delete after Cancel, as the host link does above.
+		invitePressedRef.current = false;
+		if (!confirmingDelete) {
+			inviteNoticeRef.current?.focus();
+		}
+	}, [invite, confirmingDelete]);
+
 	// A room ticket is single-use and the service only mints one for a meeting that is still open.
 	// A poll that reports any other status means the link on screen can no longer be used, so drop
 	// it instead of leaving a dead link the member may still copy.
@@ -546,6 +593,12 @@ function MeetingRow(props: MeetingRow_Props) {
 			setRoomUrl(null);
 		}
 	}, [meeting.status]);
+
+	useEffect(() => {
+		if (!canInvite && invite !== null) {
+			setInvite(null);
+		}
+	}, [canInvite, invite]);
 
 	// Closing a meeting, and opening one from its card, take away the button that was pressed. No
 	// button lands in its place, so the focus it held would fall to the page body. Send it to this
@@ -621,6 +674,16 @@ function MeetingRow(props: MeetingRow_Props) {
 			</div>
 
 			<dl className="meeting-facts">
+				<div>
+					<dt>Guest access</dt>
+					<dd>
+						{meeting.admissionMode === "token"
+							? "Token required"
+							: meeting.admissionMode === "approval"
+								? "Host approval"
+								: "Anyone with the link"}
+					</dd>
+				</div>
 				{meeting.openedAt !== null ? (
 					<div>
 						<dt>Opened</dt>
@@ -706,19 +769,21 @@ function MeetingRow(props: MeetingRow_Props) {
 				</p>
 			) : null}
 
-			{/* The guest link is only the meeting id, so the card can rebuild it at any time. The join
-			    code cannot be rebuilt: the service stores only its hash and has no route that issues a
-			    new one. So the card says plainly that the code is gone, or a member who dismissed the
-			    invite panel is left with a guest link nobody can use and no idea what to do. */}
-			{meeting.status === "created" || meeting.status === "open" ? (
+			{canInvite && invite !== null ? (
 				<div className="meeting-guest">
-					{/* Same rule as the row actions below: several cards repeat these words, so the copy
-					    row carries this meeting's title in its accessible names. */}
-					<CopyRow label="Guest link" value={`${COUNCIL_SERVICE_ORIGIN}/room?m=${meeting.id}`} subject={meeting.title} />
-					<p className="panel-hint">
-						Guests also need the join code. Council showed it once when this meeting was created and cannot show
-						it again. Create a new meeting to get a new code.
+					<p ref={inviteNoticeRef} className="panel-hint" role="status" tabIndex={-1}>
+						{meeting.admissionMode === "token"
+							? invite.joinCode === null
+								? "This older meeting's join code cannot be recovered. Use the code you saved when you created it."
+								: "Share the guest link and join code with guests."
+							: meeting.admissionMode === "approval"
+								? "Share the guest link. A host must approve each guest in the room."
+								: "Anyone with this guest link can join."}
 					</p>
+					{invite.joinCode !== null ? (
+						<CopyRow label="Join code" value={invite.joinCode} subject={meeting.title} />
+					) : null}
+					<CopyRow label="Guest link" value={invite.guestUrl} subject={meeting.title} />
 				</div>
 			) : null}
 
@@ -726,6 +791,30 @@ function MeetingRow(props: MeetingRow_Props) {
 			    its accessible name. Without it a screen reader reads "Delete, Delete, Delete" and the
 			    member cannot tell which meeting a press would destroy. */}
 			<div className="meeting-actions">
+				{canInvite ? (
+					<button
+						type="button"
+						className="button button-quiet"
+						aria-label={`${invite === null ? "Show" : "Hide"} invite ${meeting.title}`}
+						aria-expanded={invite !== null}
+						aria-busy={busy === "invite"}
+						onClick={(event) => {
+							if (invite !== null) {
+								setInvite(null);
+								return;
+							}
+							const pressed = event.currentTarget;
+							run("invite", async () => {
+								const result = await api.get_invite(meeting.id);
+								// Keep focus where the member moved while this request was waiting.
+								invitePressedRef.current = document.activeElement === pressed;
+								setInvite(result);
+							});
+						}}
+					>
+						{busy === "invite" ? "Getting invite…" : invite === null ? "Show invite" : "Hide invite"}
+					</button>
+				) : null}
 				{meeting.status === "created" ? (
 					<button
 						type="button"

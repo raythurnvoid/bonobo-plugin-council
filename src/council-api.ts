@@ -20,9 +20,12 @@
 
 export const COUNCIL_SERVICE_ORIGIN = "https://council.bonobo-senate.com";
 
+export type CouncilAdmissionMode = "token" | "approval" | "link";
+
 export type CouncilMeeting = {
 	id: string;
 	title: string;
+	admissionMode: CouncilAdmissionMode;
 	status: string;
 	createdAt: number | null;
 	openedAt: number | null;
@@ -43,10 +46,13 @@ export type CouncilArtifact = {
 	name: string;
 };
 
-export type CouncilCreatedMeeting = {
-	meeting: CouncilMeeting;
-	joinCode: string;
+export type CouncilInvite = {
+	joinCode: string | null;
 	guestUrl: string;
+};
+
+export type CouncilCreatedMeeting = CouncilInvite & {
+	meeting: CouncilMeeting;
 };
 
 function as_record(value: unknown): Record<string, unknown> | null {
@@ -105,6 +111,7 @@ function parse_meeting(value: unknown): CouncilMeeting | null {
 		!record ||
 		typeof record.id !== "string" ||
 		typeof record.title !== "string" ||
+		(record.admissionMode !== "token" && record.admissionMode !== "approval" && record.admissionMode !== "link") ||
 		typeof record.status !== "string"
 	) {
 		return null;
@@ -119,6 +126,7 @@ function parse_meeting(value: unknown): CouncilMeeting | null {
 	return {
 		id: record.id,
 		title: record.title,
+		admissionMode: record.admissionMode,
 		status: record.status,
 		createdAt: as_optional_number(record.createdAt),
 		openedAt: as_optional_number(record.openedAt),
@@ -183,13 +191,26 @@ export function create_council_api(client: { getToken(): Promise<string>; refres
 			return meetings;
 		},
 
-		async create_meeting(title: string): Promise<CouncilCreatedMeeting> {
-			const data = as_record(await post("/api/meetings/create", { title }));
+		async create_meeting(title: string, admissionMode: CouncilAdmissionMode = "token"): Promise<CouncilCreatedMeeting> {
+			const data = as_record(await post("/api/meetings/create", { title, admissionMode }));
 			const meeting = data ? parse_meeting(data.meeting) : null;
-			if (!data || !meeting || typeof data.joinCode !== "string" || typeof data.guestUrl !== "string") {
+			if (
+				!data ||
+				!meeting ||
+				(data.joinCode !== null && typeof data.joinCode !== "string") ||
+				typeof data.guestUrl !== "string"
+			) {
 				throw unexpected_response("create");
 			}
 			return { meeting, joinCode: data.joinCode, guestUrl: data.guestUrl };
+		},
+
+		async get_invite(meetingId: string): Promise<CouncilInvite> {
+			const data = as_record(await post("/api/meetings/invite", { meetingId }));
+			if (!data || (data.joinCode !== null && typeof data.joinCode !== "string") || typeof data.guestUrl !== "string") {
+				throw unexpected_response("invite");
+			}
+			return { joinCode: data.joinCode, guestUrl: data.guestUrl };
 		},
 
 		// Open answers the updated meeting, not a bare status: the dashboard needs the new deadline
