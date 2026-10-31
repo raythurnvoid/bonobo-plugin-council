@@ -1243,7 +1243,7 @@ test("delete fires only after the inline confirmation", async () => {
 	fireEvent.click(screen.getByRole("button", { name: "Delete Meeting m1" }));
 	expect(calls.some((call) => call.path === "/api/meetings/delete")).toBe(false);
 	expect(
-		screen.getByText(/^Delete Meeting m1\? Any files Council saved for it move to the Files archive/),
+		screen.getByText(/^Delete Meeting m1\? Any files Council saved for it move to the Files Trash/),
 	).toBeTruthy();
 
 	fireEvent.click(screen.getByRole("button", { name: "Confirm delete" }));

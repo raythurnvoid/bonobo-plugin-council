@@ -901,9 +901,9 @@ function MeetingRow(props: MeetingRow_Props) {
 				<div className="meeting-confirm">
 					{/* Name the meeting here: this paragraph is the confirm button's description, and it is
 					    the only place that says which meeting the press destroys. A meeting that saved
-					    nothing has no folder either, so promise only what the delete really archives. */}
+					    nothing has no folder either, so promise only what the delete really moves to Trash. */}
 					<p ref={confirmDescriptionRef} id={confirmDescriptionId} tabIndex={-1}>
-						Delete {meeting.title}? Any files Council saved for it move to the Files archive, where a member can restore
+						Delete {meeting.title}? Any files Council saved for it move to the Files Trash, where a member can restore
 						them.
 					</p>
 					{/* These two follow the same rule as the row actions above: they stay enabled and report

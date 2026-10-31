@@ -34,12 +34,12 @@ Council asks the service upload API to create every artifact as read-only. Trans
 
 - `plugin.service.connect` lets the Council service exchange the page token for an installation-bound service grant. The Worker keeps every meeting in its own D1 database and uses no plugin data, so the manifest declares neither `plugin.data` capability.
 - `workspace.files.write` lets the sealed processing grant create meeting artifacts and the meeting note under its destination prefix.
-- `workspace.files.manage-read-only` lets the Worker set the Read-only flag and use `force: true` for its file writes, uploads, and meeting-folder archive. Force skips the flag; it never skips file permissions.
+- `workspace.files.manage-read-only` lets the Worker set the Read-only flag and use `force: true` for its file writes, uploads, and moves of meeting folders to Trash. Force skips the flag; it never skips file permissions.
 - `ui.outbound.fetch` plus `uiOutboundOrigins` lets the page call only the Council Worker origin.
 
 The installation must accept the new capability. The actor and Council service account still need **Can edit** for the affected files. The old `workspace.files.create-read-only` consent grants none of the new authority. Read-only is a local flag: it has no selected writer or folder default. A member with Can edit can clear it in Properties.
 
-Deleting a meeting moves permitted files to Trash. If some files are blocked, the meeting stays in `delete_failed`, keeps its grants and artifact records, and reports how many items moved. A later delete continues against the same folder receipt. It cannot switch to a new folder that reused the path. Only a complete archive clears the meeting and its private data.
+Deleting a meeting moves permitted files to Trash. If some files are blocked, the meeting stays in `delete_failed`, keeps its grants and artifact records, and reports how many items moved. A later delete continues against the same folder receipt. It cannot switch to a new folder that reused the path. Only a complete move to Trash clears the meeting and its private data.
 
 Every page call gets a current `plu_` token from `bonobo-plugin-sdk/frontend`. A `401` refreshes it once. Join codes and room links use copy actions because the iframe has no popup permission.
 
@@ -67,7 +67,7 @@ Do not deploy or publish as part of a normal source change. A release needs sepa
 
 1. Pause new meeting creation. Finish active processing and old deletion workflows before the capability upgrade. Keep completed meetings and artifacts.
 2. Read the applied D1 migration list. Do not repeat completed migrations or erase artifact rows. The last checked deployment had `0001` through `0011`.
-3. Deploy the reviewed host API through its approved data migration. Apply Council D1 migration `0012_delete_archive_receipt.sql` before the Worker that uses archive receipts. This source change does not apply it.
+3. Deploy the reviewed host API through its approved data migration. Apply Council D1 migration `0012_delete_archive_receipt.sql` before the Worker that uses Trash receipts. This source change does not apply it.
 4. Deploy the final Council Worker.
 5. Confirm `package.json` and `pnpm-lock.yaml` pin SDK `0.24.0` at mirror commit `00fb32707c6c8e48be2cfb9e1074f64c4011a6ff`. The mirror is pushed; this source preparation does not deploy or publish Council.
 6. Update Council source and set the same unused version in `bonobo.plugin.json` and `package.json`.

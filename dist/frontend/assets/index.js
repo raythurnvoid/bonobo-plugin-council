@@ -6702,7 +6702,7 @@ function createRoot(container) {
  * This token handoff uses `plugin.service.connect`. The Worker keeps every meeting in its own
  * database and reads or writes no plugin data. It uses `workspace.files.write` and
  * `workspace.files.manage-read-only` to create Read-only recordings, transcripts, summaries,
- * provider transcripts, and meeting notes. It uses force when updating or archiving these files.
+ * provider transcripts, and meeting notes. It uses force when updating or moving these files to Trash.
  * File permissions still apply. The page reaches that Worker
  * through `ui.outbound.fetch` and declares no other page outbound origin.
  *
@@ -7738,7 +7738,7 @@ function MeetingRow(props) {
 								children: [
 									"Delete ",
 									meeting.title,
-									"? Any files Council saved for it move to the Files archive, where a member can restore them.",
+									"? Any files Council saved for it move to the Files Trash, where a member can restore them.",
 								],
 							}),
 							/* @__PURE__ */ createVNode("div", {
